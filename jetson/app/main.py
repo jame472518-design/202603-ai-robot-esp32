@@ -5,16 +5,19 @@ from contextlib import asynccontextmanager
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 
 from config import (
     MQTT_BROKER, MQTT_PORT, MQTT_TOPIC_PREFIX,
     FASTAPI_HOST, FASTAPI_PORT,
     OLLAMA_MODEL, OLLAMA_HOST,
     WHISPER_MODEL,
+    PIPER_VOICE,
 )
 from app.mqtt_client import MQTTManager
 from app.llm import LLMService
 from app.stt import STTService
+from app.tts import TTSService
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -22,6 +25,7 @@ logger = logging.getLogger(__name__)
 mqtt_manager = MQTTManager(MQTT_BROKER, MQTT_PORT, MQTT_TOPIC_PREFIX)
 llm_service = LLMService(OLLAMA_MODEL, OLLAMA_HOST)
 stt_service = STTService(WHISPER_MODEL)
+tts_service = TTSService(PIPER_VOICE)
 ws_connections: list[WebSocket] = []
 
 
@@ -105,6 +109,12 @@ async def transcribe_audio(file: UploadFile = File(...)):
     audio_bytes = await file.read()
     text = stt_service.transcribe(audio_bytes)
     return {"text": text}
+
+
+@app.post("/api/tts")
+async def text_to_speech(text: str):
+    audio = tts_service.synthesize(text)
+    return Response(content=audio, media_type="audio/wav")
 
 
 if __name__ == "__main__":
