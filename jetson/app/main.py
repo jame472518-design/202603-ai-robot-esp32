@@ -9,13 +9,16 @@ from fastapi.middleware.cors import CORSMiddleware
 from config import (
     MQTT_BROKER, MQTT_PORT, MQTT_TOPIC_PREFIX,
     FASTAPI_HOST, FASTAPI_PORT,
+    OLLAMA_MODEL, OLLAMA_HOST,
 )
 from app.mqtt_client import MQTTManager
+from app.llm import LLMService
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 mqtt_manager = MQTTManager(MQTT_BROKER, MQTT_PORT, MQTT_TOPIC_PREFIX)
+llm_service = LLMService(OLLAMA_MODEL, OLLAMA_HOST)
 ws_connections: list[WebSocket] = []
 
 
@@ -76,10 +79,18 @@ async def websocket_endpoint(ws: WebSocket):
             data = await ws.receive_text()
             message = json.loads(data)
             if message.get("type") == "chat":
-                # Placeholder: echo back (will be replaced in Task 5)
+                text = message.get("text", "")
+                # Get latest sensor context
+                sensor_ctx = ""
+                for device_data in mqtt_manager.sensor_data.values():
+                    if device_data:
+                        latest = device_data[-1]
+                        sensor_ctx = f"温度:{latest.get('temperature')}°C, 湿度:{latest.get('humidity')}%, 光照:{latest.get('light')}lux"
+                        break
+                reply = llm_service.chat(text, sensor_ctx)
                 await ws.send_text(json.dumps({
                     "type": "chat_response",
-                    "data": {"text": f"Echo: {message.get('text', '')}"},
+                    "data": {"text": reply},
                 }))
     except WebSocketDisconnect:
         ws_connections.remove(ws)
