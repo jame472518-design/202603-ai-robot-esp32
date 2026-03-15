@@ -18,6 +18,7 @@ from app.mqtt_client import MQTTManager
 from app.llm import LLMService
 from app.stt import STTService
 from app.tts import TTSService
+from app.model_scheduler import ModelScheduler
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -26,7 +27,16 @@ mqtt_manager = MQTTManager(MQTT_BROKER, MQTT_PORT, MQTT_TOPIC_PREFIX)
 llm_service = LLMService(OLLAMA_MODEL, OLLAMA_HOST)
 stt_service = STTService(WHISPER_MODEL)
 tts_service = TTSService(PIPER_VOICE)
+scheduler = ModelScheduler(stt_service, llm_service, tts_service)
 ws_connections: list[WebSocket] = []
+
+
+def _get_sensor_context() -> str:
+    for device_data in mqtt_manager.sensor_data.values():
+        if device_data:
+            latest = device_data[-1]
+            return f"温度:{latest.get('temperature')}°C, 湿度:{latest.get('humidity')}%, 光照:{latest.get('light')}lux"
+    return ""
 
 
 def on_mqtt_data(device_id: str, data_type: str, payload: dict):
@@ -87,13 +97,7 @@ async def websocket_endpoint(ws: WebSocket):
             message = json.loads(data)
             if message.get("type") == "chat":
                 text = message.get("text", "")
-                # Get latest sensor context
-                sensor_ctx = ""
-                for device_data in mqtt_manager.sensor_data.values():
-                    if device_data:
-                        latest = device_data[-1]
-                        sensor_ctx = f"温度:{latest.get('temperature')}°C, 湿度:{latest.get('humidity')}%, 光照:{latest.get('light')}lux"
-                        break
+                sensor_ctx = _get_sensor_context()
                 reply = llm_service.chat(text, sensor_ctx)
                 await ws.send_text(json.dumps({
                     "type": "chat_response",
@@ -115,6 +119,33 @@ async def transcribe_audio(file: UploadFile = File(...)):
 async def text_to_speech(text: str):
     audio = tts_service.synthesize(text)
     return Response(content=audio, media_type="audio/wav")
+
+
+@app.post("/api/voice")
+async def voice_pipeline(file: UploadFile = File(...)):
+    """Full pipeline: audio in -> text -> LLM -> TTS -> audio out"""
+    audio_bytes = await file.read()
+
+    # STT
+    text = stt_service.transcribe(audio_bytes)
+    logger.info(f"Voice input: {text}")
+
+    # LLM
+    sensor_ctx = _get_sensor_context()
+    reply = llm_service.chat(text, sensor_ctx)
+    logger.info(f"LLM reply: {reply}")
+
+    # TTS
+    audio_out = tts_service.synthesize(reply)
+
+    return Response(
+        content=audio_out,
+        media_type="audio/wav",
+        headers={
+            "X-Input-Text": text,
+            "X-Reply-Text": reply,
+        },
+    )
 
 
 if __name__ == "__main__":
