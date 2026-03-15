@@ -3,22 +3,25 @@ import json
 import logging
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, UploadFile, File
 from fastapi.middleware.cors import CORSMiddleware
 
 from config import (
     MQTT_BROKER, MQTT_PORT, MQTT_TOPIC_PREFIX,
     FASTAPI_HOST, FASTAPI_PORT,
     OLLAMA_MODEL, OLLAMA_HOST,
+    WHISPER_MODEL,
 )
 from app.mqtt_client import MQTTManager
 from app.llm import LLMService
+from app.stt import STTService
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 mqtt_manager = MQTTManager(MQTT_BROKER, MQTT_PORT, MQTT_TOPIC_PREFIX)
 llm_service = LLMService(OLLAMA_MODEL, OLLAMA_HOST)
+stt_service = STTService(WHISPER_MODEL)
 ws_connections: list[WebSocket] = []
 
 
@@ -95,6 +98,13 @@ async def websocket_endpoint(ws: WebSocket):
     except WebSocketDisconnect:
         ws_connections.remove(ws)
         logger.info(f"WebSocket client disconnected, total: {len(ws_connections)}")
+
+
+@app.post("/api/transcribe")
+async def transcribe_audio(file: UploadFile = File(...)):
+    audio_bytes = await file.read()
+    text = stt_service.transcribe(audio_bytes)
+    return {"text": text}
 
 
 if __name__ == "__main__":
