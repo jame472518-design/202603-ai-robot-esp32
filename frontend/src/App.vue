@@ -11,6 +11,9 @@
         <DevicePanel :devices="devices" />
         <SensorPanel :messages="messages" />
       </aside>
+      <section class="center-section">
+        <CameraPanel :messages="messages" :devices="devices" />
+      </section>
       <section class="chat-section">
         <ChatPanel :messages="messages" :send="send" />
       </section>
@@ -22,6 +25,7 @@
 import DevicePanel from './components/DevicePanel.vue'
 import ChatPanel from './components/ChatPanel.vue'
 import SensorPanel from './components/SensorPanel.vue'
+import CameraPanel from './components/CameraPanel.vue'
 import { useWebSocket } from './composables/useWebSocket'
 
 const wsUrl = `ws://${window.location.hostname}:8000/ws`
@@ -49,5 +53,6 @@ aside {
   width: 350px; border-right: 1px solid #313244;
   overflow-y: auto;
 }
+.center-section { flex: 1; border-right: 1px solid #313244; overflow-y: auto; }
 .chat-section { flex: 1; }
 </style>
