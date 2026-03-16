@@ -5,7 +5,7 @@ MQTT_TOPIC_PREFIX = "robot/esp32/#"
 FASTAPI_HOST = "0.0.0.0"
 FASTAPI_PORT = 8000
 
-OLLAMA_MODEL = "qwen2.5:7b"
+OLLAMA_MODEL = "qwen2.5:3b"
 OLLAMA_HOST = "http://localhost:11434"
 
 WHISPER_MODEL = "small"
