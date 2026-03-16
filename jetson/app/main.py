@@ -16,18 +16,29 @@ from config import (
 )
 from app.mqtt_client import MQTTManager
 from app.llm import LLMService
-from app.stt import STTService
-from app.tts import TTSService
-from app.model_scheduler import ModelScheduler
+
+# Optional: STT/TTS (may not be installed yet)
+try:
+    from app.stt import STTService
+    stt_available = True
+except ImportError:
+    stt_available = False
+    logging.warning("faster-whisper not installed, STT disabled")
+
+try:
+    from app.tts import TTSService
+    tts_available = True
+except ImportError:
+    tts_available = False
+    logging.warning("Piper TTS not available, TTS disabled")
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 mqtt_manager = MQTTManager(MQTT_BROKER, MQTT_PORT, MQTT_TOPIC_PREFIX)
 llm_service = LLMService(OLLAMA_MODEL, OLLAMA_HOST)
-stt_service = STTService(WHISPER_MODEL)
-tts_service = TTSService(PIPER_VOICE)
-scheduler = ModelScheduler(stt_service, llm_service, tts_service)
+stt_service = STTService(WHISPER_MODEL) if stt_available else None
+tts_service = TTSService(PIPER_VOICE) if tts_available else None
 ws_connections: list[WebSocket] = []
 
 
@@ -61,6 +72,8 @@ async def lifespan(app: FastAPI):
     mqtt_manager.add_listener(on_mqtt_data)
     mqtt_manager.start()
     logger.info("MQTT manager started")
+    logger.info(f"STT: {'enabled' if stt_available else 'disabled'}")
+    logger.info(f"TTS: {'enabled' if tts_available else 'disabled'}")
     yield
     mqtt_manager.stop()
     logger.info("MQTT manager stopped")
@@ -84,6 +97,17 @@ async def get_devices():
 @app.get("/api/sensors/{device_id}")
 async def get_sensor_data(device_id: str):
     return mqtt_manager.sensor_data.get(device_id, [])
+
+
+@app.get("/api/status")
+async def get_status():
+    return {
+        "stt": stt_available,
+        "tts": tts_available,
+        "llm": True,
+        "mqtt": True,
+        "devices_count": len(mqtt_manager.devices),
+    }
 
 
 @app.websocket("/ws")
@@ -110,6 +134,8 @@ async def websocket_endpoint(ws: WebSocket):
 
 @app.post("/api/transcribe")
 async def transcribe_audio(file: UploadFile = File(...)):
+    if not stt_available:
+        return {"text": "", "error": "STT not available"}
     audio_bytes = await file.read()
     text = stt_service.transcribe(audio_bytes)
     return {"text": text}
@@ -117,6 +143,8 @@ async def transcribe_audio(file: UploadFile = File(...)):
 
 @app.post("/api/tts")
 async def text_to_speech(text: str):
+    if not tts_available:
+        return Response(content=b"", media_type="audio/wav")
     audio = tts_service.synthesize(text)
     return Response(content=audio, media_type="audio/wav")
 
@@ -124,6 +152,9 @@ async def text_to_speech(text: str):
 @app.post("/api/voice")
 async def voice_pipeline(file: UploadFile = File(...)):
     """Full pipeline: audio in -> text -> LLM -> TTS -> audio out"""
+    if not stt_available:
+        return {"error": "STT not available, use text chat instead"}
+
     audio_bytes = await file.read()
 
     # STT
@@ -136,7 +167,10 @@ async def voice_pipeline(file: UploadFile = File(...)):
     logger.info(f"LLM reply: {reply}")
 
     # TTS
-    audio_out = tts_service.synthesize(reply)
+    if tts_available:
+        audio_out = tts_service.synthesize(reply)
+    else:
+        audio_out = b""
 
     return Response(
         content=audio_out,
