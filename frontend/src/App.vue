@@ -13,6 +13,11 @@
       </aside>
       <section class="center-section">
         <CameraPanel :messages="messages" :devices="devices" />
+        <FacePanel
+          :currentFaces="currentFaces"
+          :unknownFace="unknownFace"
+          :clearUnknownFace="clearUnknownFace"
+        />
       </section>
       <section class="chat-section">
         <ChatPanel :messages="messages" :send="send" />
@@ -26,10 +31,11 @@ import DevicePanel from './components/DevicePanel.vue'
 import ChatPanel from './components/ChatPanel.vue'
 import SensorPanel from './components/SensorPanel.vue'
 import CameraPanel from './components/CameraPanel.vue'
+import FacePanel from './components/FacePanel.vue'
 import { useWebSocket } from './composables/useWebSocket'
 
 const wsUrl = `ws://${window.location.hostname}:8000/ws`
-const { messages, devices, connected, send } = useWebSocket(wsUrl)
+const { messages, devices, connected, send, currentFaces, unknownFace, clearUnknownFace } = useWebSocket(wsUrl)
 </script>
 
 <style>

@@ -4,6 +4,8 @@ export function useWebSocket(url) {
   const messages = ref([])
   const devices = ref({})
   const connected = ref(false)
+  const currentFaces = ref([])
+  const unknownFace = ref(null)
   let ws = null
   let reconnectTimer = null
 
@@ -29,6 +31,10 @@ export function useWebSocket(url) {
         messages.value = [...messages.value.slice(-199), data]
       } else if (data.type === 'chat_response') {
         messages.value = [...messages.value, data]
+      } else if (data.type === 'face_event') {
+        currentFaces.value = data.data.faces
+      } else if (data.type === 'unknown_face') {
+        unknownFace.value = data.data
       }
     }
   }
@@ -39,11 +45,15 @@ export function useWebSocket(url) {
     }
   }
 
+  function clearUnknownFace() {
+    unknownFace.value = null
+  }
+
   onMounted(connect)
   onUnmounted(() => {
     clearTimeout(reconnectTimer)
     if (ws) ws.close()
   })
 
-  return { messages, devices, connected, send }
+  return { messages, devices, connected, send, currentFaces, unknownFace, clearUnknownFace }
 }

@@ -10,3 +10,9 @@ OLLAMA_HOST = "http://localhost:11434"
 
 WHISPER_MODEL = "small"
 PIPER_VOICE = "zh_CN-huayan-medium"
+
+# Face Recognition
+ESP32_CAM_URL = "http://10.175.143.84"
+FACE_SIMILARITY_THRESHOLD = 0.5
+FACE_LOOP_INTERVAL = 1.5
+FACE_GREET_COOLDOWN = 30
