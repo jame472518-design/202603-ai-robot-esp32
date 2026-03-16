@@ -19,7 +19,7 @@ const char* WIFI_SSID     = "OPPO Reno15 2560";
 const char* WIFI_PASSWORD = "00000011";
 
 // ===== MQTT Config =====
-const char* MQTT_HOST   = "10.75.143.199";  // Jetson IP
+const char* MQTT_HOST   = "10.175.143.199";  // Jetson IP
 const int   MQTT_PORT   = 1883;
 const char* DEVICE_ID   = "esp32s3_cam_001";
 
