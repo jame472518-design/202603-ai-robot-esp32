@@ -1,38 +1,51 @@
 # Jetson Setup Commands
 
 > Copy and paste these commands on the Jetson terminal, one step at a time.
+> All commands assume project is at `~/Desktop/product/202603-ai-robot-esp32/`
 
-## Step 0: SSH Key (run this first)
+## Step 0: SSH Key (run on Jetson, one-time setup)
 
 ```bash
-mkdir -p ~/.ssh && echo "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIMJahTAfKWFiTgh8ZulhA6Z20tr/nVwmYzeCYQkxHx1s jame4@LAPTOP-4P33R2PM" >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
+mkdir -p ~/.ssh && echo "YOUR_PC_PUBLIC_KEY_HERE" >> ~/.ssh/authorized_keys && chmod 600 ~/.ssh/authorized_keys
 ```
 
 ## Step 1: Clone project
 
 ```bash
-cd ~ && git clone https://github.com/jame472518-design/202603-ai-robot-esp32.git ai-robot
+cd ~/Desktop/product && git clone https://github.com/jame472518-design/202603-ai-robot-esp32.git && cd 202603-ai-robot-esp32
 ```
 
-## Step 2: Install system packages
+## Step 2: One-click install (recommended)
 
 ```bash
-sudo apt update && sudo apt install -y mosquitto mosquitto-clients python3-pip python3-venv nodejs npm
+sudo bash scripts/install-jetson.sh
 ```
 
-## Step 3: Start Mosquitto
+This will install all dependencies, build frontend, and configure MQTT.
+
+---
+
+## OR: Manual Step-by-Step Setup
+
+### Step 2a: Install system packages
 
 ```bash
-sudo systemctl enable mosquitto && sudo systemctl start mosquitto
+sudo apt update && sudo apt install -y mosquitto mosquitto-clients python3-pip python3-venv curl
 ```
 
-## Step 4: Python environment + dependencies
+### Step 2b: Fix Mosquitto for external connections
 
 ```bash
-cd ~/ai-robot/jetson && python3 -m venv venv && source venv/bin/activate && pip install fastapi "uvicorn[standard]" paho-mqtt websockets ollama numpy faster-whisper
+sudo bash docs/fix-mosquitto.sh
 ```
 
-## Step 5: Install Ollama + download model
+### Step 2c: Python environment + dependencies
+
+```bash
+cd ~/Desktop/product/202603-ai-robot-esp32 && python3 -m venv venv && source venv/bin/activate && pip install --upgrade pip && pip install -r jetson/requirements.txt && pip install python-multipart
+```
+
+### Step 2d: Install Ollama + download model
 
 ```bash
 curl -fsSL https://ollama.com/install.sh | sh
@@ -43,42 +56,57 @@ ollama serve &
 ```
 
 ```bash
-sleep 5 && ollama pull qwen2.5:7b
+sleep 5 && ollama pull qwen2.5:3b
 ```
 
-## Step 6: Build frontend
+### Step 2e: Install Node.js 20 + build frontend
 
 ```bash
-cd ~/ai-robot/frontend && npm install && npm run build
+curl -fsSL https://deb.nodesource.com/setup_20.x | sudo -E bash -
+sudo apt install -y nodejs
 ```
-
-## Step 7: Start backend
 
 ```bash
-cd ~/ai-robot/jetson && source venv/bin/activate && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+cd ~/Desktop/product/202603-ai-robot-esp32/frontend && npm install && npm run build
 ```
-
-## Step 8: Start frontend (open another terminal)
-
-```bash
-cd ~/ai-robot/frontend && npx serve dist -l 3000
-```
-
-## Step 9: Verify
-
-Open browser and go to: `http://JETSON_IP:3000`
 
 ---
 
-## Quick restart (after reboot)
+## Start Services
+
+### Option A: One-click start
+
+```bash
+bash ~/Desktop/product/202603-ai-robot-esp32/scripts/start.sh
+```
+
+### Option B: Manual start (3 terminals)
 
 ```bash
 # Terminal 1
 ollama serve
 
 # Terminal 2
-cd ~/ai-robot/jetson && source venv/bin/activate && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
+cd ~/Desktop/product/202603-ai-robot-esp32 && source venv/bin/activate && cd jetson && python -m uvicorn app.main:app --host 0.0.0.0 --port 8000
 
 # Terminal 3
-cd ~/ai-robot/frontend && npx serve dist -l 3000
+cd ~/Desktop/product/202603-ai-robot-esp32/frontend && npx serve dist -l 3000
 ```
+
+## Stop Services
+
+```bash
+bash ~/Desktop/product/202603-ai-robot-esp32/scripts/stop.sh
+```
+
+## Check Status
+
+```bash
+bash ~/Desktop/product/202603-ai-robot-esp32/scripts/status.sh
+```
+
+## Verify
+
+Open browser: `http://JETSON_IP:3000`
+
+API check: `curl http://JETSON_IP:8000/api/status`

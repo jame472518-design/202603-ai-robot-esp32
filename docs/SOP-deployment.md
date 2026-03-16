@@ -112,7 +112,9 @@ cd 202603-ai-robot-esp32
 ```bash
 python3 -m venv venv
 source venv/bin/activate
-pip install "fastapi[standard]" uvicorn paho-mqtt websockets ollama numpy python-multipart
+pip install --upgrade pip
+pip install -r jetson/requirements.txt
+pip install python-multipart
 ```
 
 ### 2.5 Install Ollama + download model
@@ -239,35 +241,14 @@ Browser: `http://JETSON_IP:3000`
 
 ---
 
-## Part 6: One-click Start Script (optional)
+## Part 6: Scripts (in `scripts/` directory)
 
-Create `~/Desktop/product/202603-ai-robot-esp32/start.sh`:
-
-```bash
-#!/bin/bash
-echo "=== Starting AI Companion Robot ==="
-
-ollama serve &
-sleep 3
-
-cd ~/Desktop/product/202603-ai-robot-esp32
-source venv/bin/activate
-cd jetson
-nohup python -m uvicorn app.main:app --host 0.0.0.0 --port 8000 > /tmp/backend.log 2>&1 &
-sleep 2
-
-cd ~/Desktop/product/202603-ai-robot-esp32/frontend
-nohup npx serve dist -l 3000 > /tmp/frontend.log 2>&1 &
-
-IP=$(hostname -I | awk '{print $1}')
-echo "=== All services started ==="
-echo "Dashboard: http://$IP:3000"
-echo "API: http://$IP:8000/api/status"
-```
-
-```bash
-chmod +x ~/Desktop/product/202603-ai-robot-esp32/start.sh
-```
+| Script | Usage | Description |
+|--------|-------|-------------|
+| `scripts/install-jetson.sh` | `sudo bash scripts/install-jetson.sh` | One-click install all dependencies |
+| `scripts/start.sh` | `bash scripts/start.sh` | Start all services (Ollama + Backend + Frontend) |
+| `scripts/stop.sh` | `bash scripts/stop.sh` | Stop all services |
+| `scripts/status.sh` | `bash scripts/status.sh` | Check all service status + API health |
 
 ---
 
