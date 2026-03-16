@@ -40,6 +40,7 @@ llm_service = LLMService(OLLAMA_MODEL, OLLAMA_HOST)
 stt_service = STTService(WHISPER_MODEL) if stt_available else None
 tts_service = TTSService(PIPER_VOICE) if tts_available else None
 ws_connections: list[WebSocket] = []
+_loop: asyncio.AbstractEventLoop | None = None
 
 
 def _get_sensor_context() -> str:
@@ -57,11 +58,13 @@ def on_mqtt_data(device_id: str, data_type: str, payload: dict):
         "type": data_type,
         "data": payload,
     })
+    if _loop is None:
+        return
     for ws in ws_connections[:]:
         try:
             asyncio.run_coroutine_threadsafe(
                 ws.send_text(message),
-                asyncio.get_event_loop(),
+                _loop,
             )
         except Exception:
             ws_connections.remove(ws)
@@ -69,6 +72,8 @@ def on_mqtt_data(device_id: str, data_type: str, payload: dict):
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    global _loop
+    _loop = asyncio.get_running_loop()
     mqtt_manager.add_listener(on_mqtt_data)
     mqtt_manager.start()
     logger.info("MQTT manager started")
