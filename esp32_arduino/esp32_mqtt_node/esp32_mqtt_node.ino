@@ -19,12 +19,23 @@
  * Wiring:
  *   Pan  Servo (left-right): Signal → GPIO 14, VCC → 5V, GND → GND
  *   Tilt Servo (up-down):    Signal → GPIO 3,  VCC → 5V, GND → GND
+ *   DHT11: Data → GPIO 2, VCC → 3.3V, GND → GND
+ *
+ * Libraries (Arduino IDE → Manage Libraries):
+ *   - PubSubClient (Nick O'Leary)
+ *   - DHT sensor library (Adafruit)
  */
 
 #include <WiFi.h>
 #include <PubSubClient.h>
+#include <DHT.h>
 #include "esp_camera.h"
 #include "esp_http_server.h"
+
+// ===== DHT11 Config =====
+#define DHT_PIN   2
+#define DHT_TYPE  DHT11
+DHT dht(DHT_PIN, DHT_TYPE);
 
 // ===== WiFi Config =====
 const char* WIFI_SSID     = "OPPO Reno15 2560";
@@ -566,13 +577,19 @@ void mqtt_publish_heartbeat() {
 // ===== Publish Sensor Data =====
 void mqtt_publish_sensor() {
     if (!mqttClient.connected()) return;
+
+    float humidity = dht.readHumidity();
+    float temp     = dht.readTemperature();
+
+    if (isnan(humidity) || isnan(temp)) {
+        Serial.println("DHT11 read failed");
+        return;
+    }
+
     char payload[256];
-    float temp     = 22.0 + (random(0, 100) / 20.0);
-    float humidity = 40.0 + (random(0, 100) / 5.0);
-    int   light    = random(200, 800);
     snprintf(payload, sizeof(payload),
-        "{\"temperature\":%.1f,\"humidity\":%.1f,\"light\":%d}",
-        temp, humidity, light);
+        "{\"temperature\":%.1f,\"humidity\":%.1f}",
+        temp, humidity);
     mqttClient.publish(topicSensor.c_str(), payload);
 }
 
@@ -594,6 +611,10 @@ void setup() {
     if (!camera_init()) {
         Serial.println("WARNING: Camera failed, continuing without camera");
     }
+
+    // DHT11
+    dht.begin();
+    Serial.println("DHT11 initialized");
 
     // Servos
     servoSetup();
