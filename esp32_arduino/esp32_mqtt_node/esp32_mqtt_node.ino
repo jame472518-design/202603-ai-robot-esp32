@@ -37,6 +37,11 @@
 #define DHT_TYPE  DHT11
 DHT dht(DHT_PIN, DHT_TYPE);
 
+// ===== Face Detection Types =====
+typedef struct {
+    int x, y, w, h;
+} face_box_t;
+
 // ===== WiFi Config =====
 const char* WIFI_SSID     = "OPPO Reno15 2560";
 const char* WIFI_PASSWORD = "00000011";
@@ -147,9 +152,6 @@ void servoWrite(int pin, float angle) {
 // ===== Face Detection =====
 // Simple face detection using skin color in YUV/RGB
 // Works without external libraries, reliable for demo
-typedef struct {
-    int x, y, w, h;
-} face_box_t;
 
 bool detectFaceSimple(camera_fb_t* fb, face_box_t* result) {
     // We need RGB565 or RGB888 for color-based detection
