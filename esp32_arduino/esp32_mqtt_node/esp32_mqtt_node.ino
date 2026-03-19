@@ -398,15 +398,7 @@ static esp_err_t capture_handler(httpd_req_t *req) {
 
 // ===== Servo Control HTTP Handler =====
 static esp_err_t servo_handler(httpd_req_t *req) {
-    char buf[128];
-    int ret = httpd_req_recv(req, buf, sizeof(buf) - 1);
-    if (ret <= 0) {
-        httpd_resp_send_500(req);
-        return ESP_FAIL;
-    }
-    buf[ret] = '\0';
-
-    // Parse simple query: /servo?pan=90&tilt=90
+    // Parse query: /servo?pan=90&tilt=90&track=1
     char query[128] = {0};
     if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
         char val[8];
@@ -434,6 +426,189 @@ static esp_err_t servo_handler(httpd_req_t *req) {
     httpd_resp_set_type(req, "application/json");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
     httpd_resp_sendstr(req, resp);
+    return ESP_OK;
+}
+
+// ===== Sensor Data API =====
+static esp_err_t sensor_handler(httpd_req_t *req) {
+    float humidity = dht.readHumidity();
+    float temp     = dht.readTemperature();
+    char resp[128];
+    if (isnan(humidity) || isnan(temp)) {
+        snprintf(resp, sizeof(resp), "{\"error\":\"DHT11 read failed\"}");
+    } else {
+        snprintf(resp, sizeof(resp),
+            "{\"temperature\":%.1f,\"humidity\":%.1f}",
+            temp, humidity);
+    }
+    httpd_resp_set_type(req, "application/json");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+    httpd_resp_sendstr(req, resp);
+    return ESP_OK;
+}
+
+// ===== Web Dashboard Page =====
+static const char INDEX_HTML[] PROGMEM = R"rawliteral(
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>AI Robot - ESP32 Control</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+body{background:#181825;color:#cdd6f4;font-family:system-ui,sans-serif;padding:16px}
+h1{font-size:1.3em;margin-bottom:12px;color:#89b4fa}
+.grid{display:grid;grid-template-columns:1fr 1fr;gap:12px;max-width:900px;margin:0 auto}
+.card{background:#1e1e2e;border-radius:10px;padding:14px;border:1px solid #313244}
+.card h3{font-size:0.95em;color:#a6adc8;margin-bottom:10px}
+.cam-box{grid-column:1/3;text-align:center}
+.cam-box img{width:100%;max-width:640px;border-radius:8px;background:#11111b}
+.sensor-val{font-size:2em;font-weight:bold;color:#a6e3a1}
+.sensor-unit{font-size:0.5em;color:#9399b2}
+.sensor-row{display:flex;gap:20px;justify-content:center;margin-top:4px}
+.slider-group{margin:8px 0}
+.slider-group label{display:flex;justify-content:space-between;font-size:0.85em;color:#9399b2;margin-bottom:4px}
+input[type=range]{width:100%;accent-color:#89b4fa;background:#313244;height:6px;border-radius:3px;-webkit-appearance:none;appearance:none}
+input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:18px;height:18px;border-radius:50%;background:#89b4fa;cursor:pointer}
+.btn{padding:8px 16px;border:none;border-radius:6px;cursor:pointer;font-size:0.9em;margin:4px}
+.btn-on{background:#a6e3a1;color:#1e1e2e}
+.btn-off{background:#f38ba8;color:#1e1e2e}
+.btn-center{background:#89b4fa;color:#1e1e2e}
+.btn-group{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px}
+.status{font-size:0.8em;color:#6c7086;margin-top:8px}
+.track-badge{display:inline-block;padding:2px 8px;border-radius:4px;font-size:0.75em;font-weight:bold}
+.track-on{background:#a6e3a1;color:#1e1e2e;animation:pulse 2s infinite}
+.track-off{background:#45475a;color:#9399b2}
+@keyframes pulse{0%,100%{opacity:1}50%{opacity:.6}}
+@media(max-width:600px){.grid{grid-template-columns:1fr}.cam-box{grid-column:1}}
+</style>
+</head>
+<body>
+<h1>AI Companion Robot - ESP32 Control</h1>
+<div class="grid">
+
+<div class="card cam-box">
+<h3>Camera <span id="trackBadge" class="track-badge track-on">TRACKING</span></h3>
+<img id="stream" src="" alt="Loading camera...">
+<div class="btn-group" style="justify-content:center;margin-top:8px">
+<button class="btn btn-center" onclick="setServo(90,90)">Center</button>
+<button class="btn btn-on" id="btnTrack" onclick="toggleTrack()">Tracking ON</button>
+</div>
+</div>
+
+<div class="card">
+<h3>Temperature</h3>
+<div class="sensor-row">
+<div class="sensor-val" id="temp">--<span class="sensor-unit"> C</span></div>
+</div>
+</div>
+
+<div class="card">
+<h3>Humidity</h3>
+<div class="sensor-row">
+<div class="sensor-val" id="hum">--<span class="sensor-unit"> %</span></div>
+</div>
+</div>
+
+<div class="card" style="grid-column:1/3">
+<h3>Servo Control</h3>
+<div class="slider-group">
+<label><span>Pan (Left-Right)</span><span id="panVal">90</span></label>
+<input type="range" id="panSlider" min="20" max="160" value="90" oninput="onSlider()">
+</div>
+<div class="slider-group">
+<label><span>Tilt (Up-Down)</span><span id="tiltVal">90</span></label>
+<input type="range" id="tiltSlider" min="60" max="120" value="90" oninput="onSlider()">
+</div>
+<div class="status" id="servoStatus">Pan: 90 | Tilt: 90</div>
+</div>
+
+</div>
+
+<script>
+var trackOn = true;
+var host = location.hostname;
+document.getElementById('stream').src = 'http://'+host+':81/stream';
+
+function fetchSensor(){
+  fetch('/sensor').then(r=>r.json()).then(d=>{
+    if(!d.error){
+      document.getElementById('temp').innerHTML=d.temperature.toFixed(1)+'<span class="sensor-unit"> C</span>';
+      document.getElementById('hum').innerHTML=d.humidity.toFixed(1)+'<span class="sensor-unit"> %</span>';
+    }
+  }).catch(()=>{});
+}
+
+function setServo(p,t){
+  var url='/servo?pan='+p+'&tilt='+t;
+  fetch(url).then(r=>r.json()).then(d=>{
+    document.getElementById('panSlider').value=d.pan;
+    document.getElementById('tiltSlider').value=d.tilt;
+    document.getElementById('panVal').textContent=Math.round(d.pan);
+    document.getElementById('tiltVal').textContent=Math.round(d.tilt);
+    document.getElementById('servoStatus').textContent='Pan: '+Math.round(d.pan)+' | Tilt: '+Math.round(d.tilt);
+  }).catch(()=>{});
+}
+
+var sliderTimer=null;
+function onSlider(){
+  var p=document.getElementById('panSlider').value;
+  var t=document.getElementById('tiltSlider').value;
+  document.getElementById('panVal').textContent=p;
+  document.getElementById('tiltVal').textContent=t;
+  clearTimeout(sliderTimer);
+  sliderTimer=setTimeout(function(){
+    fetch('/servo?pan='+p+'&tilt='+t+'&track=0').then(r=>r.json()).then(d=>{
+      trackOn=false;
+      updateTrackUI();
+      document.getElementById('servoStatus').textContent='Pan: '+Math.round(d.pan)+' | Tilt: '+Math.round(d.tilt);
+    });
+  },100);
+}
+
+function toggleTrack(){
+  trackOn=!trackOn;
+  fetch('/servo?track='+(trackOn?1:0)).then(r=>r.json()).then(d=>{
+    trackOn=d.tracking;
+    updateTrackUI();
+  });
+}
+
+function updateTrackUI(){
+  var btn=document.getElementById('btnTrack');
+  var badge=document.getElementById('trackBadge');
+  if(trackOn){
+    btn.textContent='Tracking ON';btn.className='btn btn-on';
+    badge.textContent='TRACKING';badge.className='track-badge track-on';
+  }else{
+    btn.textContent='Tracking OFF';btn.className='btn btn-off';
+    badge.textContent='MANUAL';badge.className='track-badge track-off';
+  }
+}
+
+setInterval(fetchSensor, 2000);
+fetchSensor();
+
+setInterval(function(){
+  if(trackOn){
+    fetch('/servo').then(r=>r.json()).then(d=>{
+      document.getElementById('panSlider').value=d.pan;
+      document.getElementById('tiltSlider').value=d.tilt;
+      document.getElementById('panVal').textContent=Math.round(d.pan);
+      document.getElementById('tiltVal').textContent=Math.round(d.tilt);
+      document.getElementById('servoStatus').textContent='Pan: '+Math.round(d.pan)+' | Tilt: '+Math.round(d.tilt);
+    });
+  }
+},1000);
+</script>
+</body>
+</html>
+)rawliteral";
+
+static esp_err_t index_handler(httpd_req_t *req) {
+    httpd_resp_set_type(req, "text/html");
+    httpd_resp_sendstr(req, INDEX_HTML);
     return ESP_OK;
 }
 
@@ -474,10 +649,26 @@ void startCameraServer() {
         .user_ctx  = NULL
     };
 
+    httpd_uri_t sensor_uri = {
+        .uri       = "/sensor",
+        .method    = HTTP_GET,
+        .handler   = sensor_handler,
+        .user_ctx  = NULL
+    };
+
+    httpd_uri_t index_uri = {
+        .uri       = "/",
+        .method    = HTTP_GET,
+        .handler   = index_handler,
+        .user_ctx  = NULL
+    };
+
     if (httpd_start(&camera_httpd, &config) == ESP_OK) {
+        httpd_register_uri_handler(camera_httpd, &index_uri);
         httpd_register_uri_handler(camera_httpd, &capture_uri);
         httpd_register_uri_handler(camera_httpd, &servo_uri);
-        Serial.println("Capture + Servo server started on port 80");
+        httpd_register_uri_handler(camera_httpd, &sensor_uri);
+        Serial.println("Web dashboard + API started on port 80");
     }
 }
 
@@ -627,9 +818,8 @@ void setup() {
     // Start camera HTTP servers
     if (WiFi.status() == WL_CONNECTED) {
         startCameraServer();
-        Serial.printf("Stream:  http://%s:81/stream\n", WiFi.localIP().toString().c_str());
-        Serial.printf("Capture: http://%s/capture\n", WiFi.localIP().toString().c_str());
-        Serial.printf("Servo:   http://%s/servo?pan=90&tilt=90&track=1\n", WiFi.localIP().toString().c_str());
+        Serial.printf("Dashboard: http://%s/\n", WiFi.localIP().toString().c_str());
+        Serial.printf("Stream:    http://%s:81/stream\n", WiFi.localIP().toString().c_str());
     }
 
     // MQTT
