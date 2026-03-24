@@ -11,6 +11,12 @@
  *   SG90 Pan:  Signal → GPIO 14, VCC → 5V, GND → GND
  *   SG90 Tilt: Signal → GPIO 3,  VCC → 5V, GND → GND
  *   DHT11:     Data   → GPIO 2,  VCC → 3.3V, GND → GND
+ *   OLED:      SDA → GPIO 47, SCL → GPIO 48, VCC → 3.3V, GND → GND
+ *
+ * Libraries:
+ *   - DHT sensor library (Adafruit)
+ *   - Adafruit SSD1306
+ *   - Adafruit GFX Library
  *
  * Usage:
  *   Open Serial Monitor (115200 baud)
@@ -22,10 +28,16 @@
  *     5 = Test WiFi
  *     6 = Servo sweep (continuous)
  *     7 = Test ALL
- *     s = Stop servo sweep
+ *     8 = Test OLED
+ *     9 = OLED live sensor display
+ *     s = Stop servo sweep / OLED live
  */
 
+#include <WiFi.h>
+#include <Wire.h>
 #include <DHT.h>
+#include <Adafruit_GFX.h>
+#include <Adafruit_SSD1306.h>
 #include "esp_camera.h"
 
 // ===== Pin Config =====
@@ -33,6 +45,16 @@
 #define SERVO_TILT_PIN   3
 #define DHT_PIN           2
 #define DHT_TYPE       DHT11
+
+// ===== OLED Config =====
+#define OLED_SDA       47
+#define OLED_SCL       48
+#define OLED_WIDTH    128
+#define OLED_HEIGHT    64
+#define OLED_ADDR    0x3C
+
+Adafruit_SSD1306 oled(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
+bool oledReady = false;
 
 // ===== Camera Pins (GOOUUU ESP32-S3-CAM) =====
 #define PWDN_GPIO_NUM  -1
@@ -263,6 +285,150 @@ void servoSweep() {
     Serial.println("===== Sweep stopped =====\n");
 }
 
+void testOLED() {
+    Serial.println("\n===== TEST: OLED 128x64 (GPIO 47/48) =====");
+
+    if (!oledReady) {
+        Wire.begin(OLED_SDA, OLED_SCL);
+        if (!oled.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
+            Serial.println("  FAIL - OLED not found at 0x3C");
+            Serial.println("  Check: wiring, VCC=3.3V, try address 0x3D");
+
+            // I2C scan
+            Serial.println("  Scanning I2C bus...");
+            for (uint8_t addr = 1; addr < 127; addr++) {
+                Wire.beginTransmission(addr);
+                if (Wire.endTransmission() == 0) {
+                    Serial.printf("  Found device at 0x%02X\n", addr);
+                }
+            }
+            Serial.println("===== OLED TEST DONE =====\n");
+            return;
+        }
+        oledReady = true;
+        Serial.println("  OLED initialized OK");
+    }
+
+    // Test 1: Clear screen
+    oled.clearDisplay();
+    oled.display();
+    delay(300);
+
+    // Test 2: Text
+    oled.setTextSize(1);
+    oled.setTextColor(SSD1306_WHITE);
+    oled.setCursor(0, 0);
+    oled.println("AI Companion Robot");
+    oled.println("------------------");
+    oled.println("OLED Test OK!");
+    oled.println("");
+    oled.setTextSize(2);
+    oled.println("Hello!");
+    oled.display();
+    Serial.println("  OK - Text displayed");
+    delay(2000);
+
+    // Test 3: Shapes
+    oled.clearDisplay();
+    oled.drawRect(0, 0, 128, 64, SSD1306_WHITE);
+    oled.fillCircle(64, 32, 20, SSD1306_WHITE);
+    oled.display();
+    Serial.println("  OK - Shapes displayed");
+    delay(2000);
+
+    // Test 4: Progress bar animation
+    oled.clearDisplay();
+    oled.setTextSize(1);
+    oled.setCursor(30, 10);
+    oled.println("Loading...");
+    oled.display();
+    for (int i = 0; i <= 100; i += 5) {
+        oled.fillRect(14, 30, i, 12, SSD1306_WHITE);
+        oled.drawRect(14, 30, 100, 12, SSD1306_WHITE);
+        oled.display();
+        delay(50);
+    }
+    Serial.println("  OK - Animation displayed");
+    delay(1000);
+
+    Serial.println("===== OLED TEST DONE =====\n");
+}
+
+void oledLiveSensor() {
+    Serial.println("\n===== OLED Live Sensor (type 's' to stop) =====");
+
+    if (!oledReady) {
+        Wire.begin(OLED_SDA, OLED_SCL);
+        if (!oled.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
+            Serial.println("  FAIL - OLED not found");
+            return;
+        }
+        oledReady = true;
+    }
+
+    sweeping = true;  // reuse flag for stop
+    unsigned long startTime = millis();
+
+    while (sweeping) {
+        float h = dht.readHumidity();
+        float t = dht.readTemperature();
+        unsigned long uptime = (millis() - startTime) / 1000;
+
+        oled.clearDisplay();
+
+        // Title
+        oled.setTextSize(1);
+        oled.setTextColor(SSD1306_WHITE);
+        oled.setCursor(0, 0);
+        oled.println("AI Companion Robot");
+        oled.drawLine(0, 10, 128, 10, SSD1306_WHITE);
+
+        // Sensor data
+        oled.setCursor(0, 14);
+        if (!isnan(t) && !isnan(h)) {
+            oled.setTextSize(1);
+            oled.print("Temp: ");
+            oled.setTextSize(2);
+            oled.printf("%.1fC\n", t);
+
+            oled.setTextSize(1);
+            oled.print("Hum:  ");
+            oled.setTextSize(2);
+            oled.printf("%.1f%%\n", h);
+        } else {
+            oled.setTextSize(1);
+            oled.println("DHT11: reading...");
+        }
+
+        // Servo angles
+        oled.setTextSize(1);
+        oled.setCursor(0, 54);
+        oled.printf("Pan:%.0f Tilt:%.0f  %lus",
+                    panAngle, tiltAngle, uptime);
+
+        oled.display();
+
+        // Check for stop command
+        for (int i = 0; i < 10; i++) {
+            delay(200);
+            if (Serial.available()) {
+                char c = Serial.read();
+                if (c == 's' || c == 'S') {
+                    sweeping = false;
+                    break;
+                }
+            }
+        }
+    }
+
+    oled.clearDisplay();
+    oled.setTextSize(1);
+    oled.setCursor(20, 28);
+    oled.println("Stopped.");
+    oled.display();
+    Serial.println("===== OLED Live stopped =====\n");
+}
+
 void testAll() {
     Serial.println("\n##############################");
     Serial.println("# TESTING ALL COMPONENTS     #");
@@ -273,6 +439,7 @@ void testAll() {
     testServoTilt();
     testCamera();
     testWiFi();
+    testOLED();
 
     Serial.println("##############################");
     Serial.println("# ALL TESTS COMPLETE         #");
@@ -290,7 +457,9 @@ void printMenu() {
     Serial.println("  5 = WiFi");
     Serial.println("  6 = Servo sweep (continuous)");
     Serial.println("  7 = Test ALL");
-    Serial.println("  s = Stop sweep");
+    Serial.println("  8 = OLED display test");
+    Serial.println("  9 = OLED live sensor");
+    Serial.println("  s = Stop sweep / live");
     Serial.println("================================");
     Serial.println("Type a number and press Enter:\n");
 }
@@ -331,6 +500,8 @@ void loop() {
             case '5': testWiFi(); printMenu(); break;
             case '6': servoSweep(); printMenu(); break;
             case '7': testAll(); printMenu(); break;
+            case '8': testOLED(); printMenu(); break;
+            case '9': oledLiveSensor(); printMenu(); break;
             case 's':
             case 'S': sweeping = false; break;
             default: break;
