@@ -36,8 +36,7 @@
 #include <WiFi.h>
 #include <Wire.h>
 #include <DHT.h>
-#include <Adafruit_GFX.h>
-#include <Adafruit_SSD1306.h>
+#include <U8g2lib.h>
 #include "esp_camera.h"
 
 // ===== Pin Config =====
@@ -53,8 +52,13 @@
 #define OLED_HEIGHT    64
 #define OLED_ADDR    0x3C
 
-Adafruit_SSD1306 oled(OLED_WIDTH, OLED_HEIGHT, &Wire, -1);
+// SH1106 1.3" OLED via I2C
+U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, /* reset=*/ U8X8_PIN_NONE);
 bool oledReady = false;
+
+// Servo angle tracking (for OLED display)
+float panAngle = 90.0;
+float tiltAngle = 90.0;
 
 // ===== Camera Pins (GOOUUU ESP32-S3-CAM) =====
 #define PWDN_GPIO_NUM  -1
@@ -285,67 +289,48 @@ void servoSweep() {
     Serial.println("===== Sweep stopped =====\n");
 }
 
+void initOLED() {
+    if (oledReady) return;
+    Wire.begin(OLED_SDA, OLED_SCL);
+    u8g2.setBusClock(400000);
+    u8g2.begin();
+    oledReady = true;
+    Serial.println("  OLED (SH1106) initialized OK");
+}
+
 void testOLED() {
-    Serial.println("\n===== TEST: OLED 128x64 (GPIO 47/48) =====");
+    Serial.println("\n===== TEST: OLED 1.3\" SH1106 (GPIO 47/48) =====");
 
-    if (!oledReady) {
-        Wire.begin(OLED_SDA, OLED_SCL);
-        if (!oled.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
-            Serial.println("  FAIL - OLED not found at 0x3C");
-            Serial.println("  Check: wiring, VCC=3.3V, try address 0x3D");
+    initOLED();
 
-            // I2C scan
-            Serial.println("  Scanning I2C bus...");
-            for (uint8_t addr = 1; addr < 127; addr++) {
-                Wire.beginTransmission(addr);
-                if (Wire.endTransmission() == 0) {
-                    Serial.printf("  Found device at 0x%02X\n", addr);
-                }
-            }
-            Serial.println("===== OLED TEST DONE =====\n");
-            return;
-        }
-        oledReady = true;
-        Serial.println("  OLED initialized OK");
-    }
-
-    // Test 1: Clear screen
-    oled.clearDisplay();
-    oled.display();
-    delay(300);
-
-    // Test 2: Text
-    oled.setTextSize(1);
-    oled.setTextColor(SSD1306_WHITE);
-    oled.setCursor(0, 0);
-    oled.println("AI Companion Robot");
-    oled.println("------------------");
-    oled.println("OLED Test OK!");
-    oled.println("");
-    oled.setTextSize(2);
-    oled.println("Hello!");
-    oled.display();
+    // Test 1: Text
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_6x10_tr);
+    u8g2.drawStr(0, 10, "AI Companion Robot");
+    u8g2.drawLine(0, 12, 128, 12);
+    u8g2.drawStr(0, 26, "OLED Test OK!");
+    u8g2.setFont(u8g2_font_10x20_tr);
+    u8g2.drawStr(20, 50, "Hello!");
+    u8g2.sendBuffer();
     Serial.println("  OK - Text displayed");
     delay(2000);
 
-    // Test 3: Shapes
-    oled.clearDisplay();
-    oled.drawRect(0, 0, 128, 64, SSD1306_WHITE);
-    oled.fillCircle(64, 32, 20, SSD1306_WHITE);
-    oled.display();
+    // Test 2: Shapes
+    u8g2.clearBuffer();
+    u8g2.drawFrame(0, 0, 128, 64);
+    u8g2.drawDisc(64, 32, 20);
+    u8g2.sendBuffer();
     Serial.println("  OK - Shapes displayed");
     delay(2000);
 
-    // Test 4: Progress bar animation
-    oled.clearDisplay();
-    oled.setTextSize(1);
-    oled.setCursor(30, 10);
-    oled.println("Loading...");
-    oled.display();
+    // Test 3: Progress bar animation
     for (int i = 0; i <= 100; i += 5) {
-        oled.fillRect(14, 30, i, 12, SSD1306_WHITE);
-        oled.drawRect(14, 30, 100, 12, SSD1306_WHITE);
-        oled.display();
+        u8g2.clearBuffer();
+        u8g2.setFont(u8g2_font_6x10_tr);
+        u8g2.drawStr(30, 20, "Loading...");
+        u8g2.drawFrame(14, 30, 100, 14);
+        u8g2.drawBox(14, 30, i, 14);
+        u8g2.sendBuffer();
         delay(50);
     }
     Serial.println("  OK - Animation displayed");
@@ -356,59 +341,52 @@ void testOLED() {
 
 void oledLiveSensor() {
     Serial.println("\n===== OLED Live Sensor (type 's' to stop) =====");
+    initOLED();
 
-    if (!oledReady) {
-        Wire.begin(OLED_SDA, OLED_SCL);
-        if (!oled.begin(SSD1306_SWITCHCAPVCC, OLED_ADDR)) {
-            Serial.println("  FAIL - OLED not found");
-            return;
-        }
-        oledReady = true;
-    }
-
-    sweeping = true;  // reuse flag for stop
+    sweeping = true;
     unsigned long startTime = millis();
+    char buf[32];
 
     while (sweeping) {
         float h = dht.readHumidity();
         float t = dht.readTemperature();
         unsigned long uptime = (millis() - startTime) / 1000;
 
-        oled.clearDisplay();
+        u8g2.clearBuffer();
 
         // Title
-        oled.setTextSize(1);
-        oled.setTextColor(SSD1306_WHITE);
-        oled.setCursor(0, 0);
-        oled.println("AI Companion Robot");
-        oled.drawLine(0, 10, 128, 10, SSD1306_WHITE);
+        u8g2.setFont(u8g2_font_6x10_tr);
+        u8g2.drawStr(0, 10, "AI Companion Robot");
+        u8g2.drawLine(0, 12, 128, 12);
 
-        // Sensor data
-        oled.setCursor(0, 14);
         if (!isnan(t) && !isnan(h)) {
-            oled.setTextSize(1);
-            oled.print("Temp: ");
-            oled.setTextSize(2);
-            oled.printf("%.1fC\n", t);
+            // Temperature
+            u8g2.setFont(u8g2_font_6x10_tr);
+            u8g2.drawStr(0, 26, "Temp:");
+            u8g2.setFont(u8g2_font_10x20_tr);
+            snprintf(buf, sizeof(buf), "%.1fC", t);
+            u8g2.drawStr(40, 28, buf);
 
-            oled.setTextSize(1);
-            oled.print("Hum:  ");
-            oled.setTextSize(2);
-            oled.printf("%.1f%%\n", h);
+            // Humidity
+            u8g2.setFont(u8g2_font_6x10_tr);
+            u8g2.drawStr(0, 44, "Hum:");
+            u8g2.setFont(u8g2_font_10x20_tr);
+            snprintf(buf, sizeof(buf), "%.1f%%", h);
+            u8g2.drawStr(40, 46, buf);
         } else {
-            oled.setTextSize(1);
-            oled.println("DHT11: reading...");
+            u8g2.setFont(u8g2_font_6x10_tr);
+            u8g2.drawStr(0, 28, "DHT11: reading...");
         }
 
-        // Servo angles
-        oled.setTextSize(1);
-        oled.setCursor(0, 54);
-        oled.printf("Pan:%.0f Tilt:%.0f  %lus",
-                    panAngle, tiltAngle, uptime);
+        // Servo + uptime
+        u8g2.setFont(u8g2_font_6x10_tr);
+        snprintf(buf, sizeof(buf), "Pan:%.0f Tilt:%.0f %lus",
+                 panAngle, tiltAngle, uptime);
+        u8g2.drawStr(0, 62, buf);
 
-        oled.display();
+        u8g2.sendBuffer();
 
-        // Check for stop command
+        // Check for stop
         for (int i = 0; i < 10; i++) {
             delay(200);
             if (Serial.available()) {
@@ -421,11 +399,10 @@ void oledLiveSensor() {
         }
     }
 
-    oled.clearDisplay();
-    oled.setTextSize(1);
-    oled.setCursor(20, 28);
-    oled.println("Stopped.");
-    oled.display();
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_6x10_tr);
+    u8g2.drawStr(30, 35, "Stopped.");
+    u8g2.sendBuffer();
     Serial.println("===== OLED Live stopped =====\n");
 }
 
