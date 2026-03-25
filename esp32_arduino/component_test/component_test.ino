@@ -12,11 +12,11 @@
  *   SG90 Tilt: Signal → GPIO 3,  VCC → 5V, GND → GND
  *   DHT11:     Data   → GPIO 2,  VCC → 3.3V, GND → GND
  *   OLED:      SDA → GPIO 47, SCL → GPIO 48, VCC → 3.3V, GND → GND
+ *   INMP441:   SCK → GPIO 40, WS → GPIO 41, SD → GPIO 42, L/R → GND, VDD → 3.3V
  *
  * Libraries:
  *   - DHT sensor library (Adafruit)
- *   - Adafruit SSD1306
- *   - Adafruit GFX Library
+ *   - U8g2
  *
  * Usage:
  *   Open Serial Monitor (115200 baud)
@@ -30,13 +30,15 @@
  *     7 = Test ALL
  *     8 = Test OLED
  *     9 = OLED live sensor display
- *     s = Stop servo sweep / OLED live
+ *     m = Test INMP441 microphone
+ *     s = Stop sweep / live / mic
  */
 
 #include <WiFi.h>
 #include <Wire.h>
 #include <DHT.h>
 #include <U8g2lib.h>
+#include <driver/i2s.h>
 #include "esp_camera.h"
 
 // ===== Pin Config =====
@@ -59,6 +61,15 @@ bool oledReady = false;
 // Servo angle tracking (for OLED display)
 float panAngle = 90.0;
 float tiltAngle = 90.0;
+
+// ===== INMP441 I2S Config =====
+#define I2S_SCK    40
+#define I2S_WS     41
+#define I2S_SD     42
+#define I2S_PORT   I2S_NUM_0
+#define I2S_SAMPLE_RATE  16000
+#define I2S_BUF_LEN      512
+bool micReady = false;
 
 // ===== Camera Pins (GOOUUU ESP32-S3-CAM) =====
 #define PWDN_GPIO_NUM  -1
@@ -406,6 +417,95 @@ void oledLiveSensor() {
     Serial.println("===== OLED Live stopped =====\n");
 }
 
+void initMic() {
+    if (micReady) return;
+
+    i2s_config_t i2s_config = {
+        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
+        .sample_rate = I2S_SAMPLE_RATE,
+        .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
+        .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+        .dma_buf_count = 4,
+        .dma_buf_len = I2S_BUF_LEN,
+        .use_apll = false,
+        .tx_desc_auto_clear = false,
+        .fixed_mclk = 0,
+    };
+
+    i2s_pin_config_t pin_config = {
+        .bck_io_num = I2S_SCK,
+        .ws_io_num = I2S_WS,
+        .data_out_num = I2S_PIN_NO_CHANGE,
+        .data_in_num = I2S_SD,
+    };
+
+    if (i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL) == ESP_OK &&
+        i2s_set_pin(I2S_PORT, &pin_config) == ESP_OK) {
+        micReady = true;
+        Serial.println("  I2S microphone initialized OK");
+    } else {
+        Serial.println("  FAIL - I2S init failed");
+    }
+}
+
+void testMicrophone() {
+    Serial.println("\n===== TEST: INMP441 Microphone (GPIO 40/41/42) =====");
+    Serial.println("Speak or clap near the mic! (type 's' to stop)\n");
+
+    initMic();
+    if (!micReady) {
+        Serial.println("===== MIC TEST DONE =====\n");
+        return;
+    }
+
+    sweeping = true;
+    int32_t samples[I2S_BUF_LEN];
+    size_t bytesRead = 0;
+    int count = 0;
+
+    while (sweeping) {
+        i2s_read(I2S_PORT, samples, sizeof(samples), &bytesRead, portMAX_DELAY);
+        int numSamples = bytesRead / sizeof(int32_t);
+
+        if (numSamples == 0) continue;
+
+        // Calculate RMS volume
+        int64_t sum = 0;
+        int32_t maxVal = 0;
+        int32_t minVal = 0;
+        for (int i = 0; i < numSamples; i++) {
+            int32_t s = samples[i] >> 14;  // Scale down 32-bit to useful range
+            sum += (int64_t)s * s;
+            if (s > maxVal) maxVal = s;
+            if (s < minVal) minVal = s;
+        }
+        float rms = sqrt((float)sum / numSamples);
+        int level = map(constrain((int)rms, 0, 5000), 0, 5000, 0, 30);
+
+        // Print volume bar every 5th read
+        count++;
+        if (count % 5 == 0) {
+            Serial.printf("  Vol: [");
+            for (int i = 0; i < 30; i++) {
+                Serial.print(i < level ? '#' : ' ');
+            }
+            Serial.printf("] RMS:%6.0f  Peak:%d\n", rms, maxVal - minVal);
+        }
+
+        // Check stop
+        if (Serial.available()) {
+            char c = Serial.read();
+            if (c == 's' || c == 'S') sweeping = false;
+        }
+    }
+
+    i2s_driver_uninstall(I2S_PORT);
+    micReady = false;
+    Serial.println("===== MIC TEST DONE =====\n");
+}
+
 void testAll() {
     Serial.println("\n##############################");
     Serial.println("# TESTING ALL COMPONENTS     #");
@@ -417,6 +517,7 @@ void testAll() {
     testCamera();
     testWiFi();
     testOLED();
+    testMicrophone();
 
     Serial.println("##############################");
     Serial.println("# ALL TESTS COMPLETE         #");
@@ -436,7 +537,8 @@ void printMenu() {
     Serial.println("  7 = Test ALL");
     Serial.println("  8 = OLED display test");
     Serial.println("  9 = OLED live sensor");
-    Serial.println("  s = Stop sweep / live");
+    Serial.println("  m = INMP441 microphone");
+    Serial.println("  s = Stop sweep / live / mic");
     Serial.println("================================");
     Serial.println("Type a number and press Enter:\n");
 }
@@ -479,6 +581,8 @@ void loop() {
             case '7': testAll(); printMenu(); break;
             case '8': testOLED(); printMenu(); break;
             case '9': oledLiveSensor(); printMenu(); break;
+            case 'm':
+            case 'M': testMicrophone(); printMenu(); break;
             case 's':
             case 'S': sweeping = false; break;
             default: break;
