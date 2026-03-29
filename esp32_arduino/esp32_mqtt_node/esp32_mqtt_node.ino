@@ -15,11 +15,14 @@
  *   - Snapshot on http://ESP32_IP/capture
  *   - MQTT heartbeat + sensor data + tracking status
  *   - Pan-Tilt face tracking with 2x SG90 servos
+ *   - INMP441 I2S microphone recording via /record endpoint
+ *   - Audio sent to Jetson/PC for playback (no onboard speaker needed)
  *
  * Wiring:
  *   Pan  Servo (left-right): Signal → GPIO 14, VCC → 5V, GND → GND
  *   Tilt Servo (up-down):    Signal → GPIO 3,  VCC → 5V, GND → GND
- *   DHT11: Data → GPIO 2, VCC → 3.3V, GND → GND
+ *   DHT11:   Data → GPIO 2, VCC → 3.3V, GND → GND
+ *   INMP441: SCK → GPIO 38, WS → GPIO 39, SD → GPIO 40, L/R → GND, VDD → 3.3V
  *
  * Libraries (Arduino IDE → Manage Libraries):
  *   - PubSubClient (Nick O'Leary)
@@ -29,6 +32,7 @@
 #include <WiFi.h>
 #include <PubSubClient.h>
 #include <DHT.h>
+#include <driver/i2s.h>
 #include "esp_camera.h"
 #include "esp_http_server.h"
 
@@ -36,6 +40,15 @@
 #define DHT_PIN   2
 #define DHT_TYPE  DHT11
 DHT dht(DHT_PIN, DHT_TYPE);
+
+// ===== INMP441 I2S Config =====
+#define I2S_SCK    38
+#define I2S_WS     39
+#define I2S_SD     40
+#define I2S_PORT   I2S_NUM_0
+#define I2S_SAMPLE_RATE  16000
+#define I2S_BUF_LEN      512
+#define RECORD_SECONDS   3
 
 // ===== Face Detection Types =====
 typedef struct {
@@ -71,7 +84,7 @@ const char* DEVICE_ID   = "esp32s3_cam_001";
 
 // ===== Servo Config =====
 #define SERVO_PAN_PIN   14   // Left-Right
-#define SERVO_TILT_PIN   3   // Up-Down
+#define SERVO_TILT_PIN   47   // Up-Down
 
 // LEDC channels (camera uses channel 0)
 #define SERVO_PAN_CHANNEL   2
@@ -447,6 +460,101 @@ static esp_err_t sensor_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
+// ===== Record Audio Handler =====
+static esp_err_t record_handler(httpd_req_t *req) {
+    // Parse duration from query: /record?seconds=3
+    int seconds = RECORD_SECONDS;
+    char query[32] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        char val[8];
+        if (httpd_query_key_value(query, "seconds", val, sizeof(val)) == ESP_OK) {
+            seconds = constrain(atoi(val), 1, 10);
+        }
+    }
+
+    // Init I2S for recording
+    i2s_config_t i2s_config = {
+        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
+        .sample_rate = I2S_SAMPLE_RATE,
+        .bits_per_sample = I2S_BITS_PER_SAMPLE_32BIT,
+        .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+        .dma_buf_count = 4,
+        .dma_buf_len = I2S_BUF_LEN,
+        .use_apll = false,
+        .tx_desc_auto_clear = false,
+        .fixed_mclk = 0,
+    };
+    i2s_pin_config_t pin_config = {
+        .bck_io_num = I2S_SCK,
+        .ws_io_num = I2S_WS,
+        .data_out_num = I2S_PIN_NO_CHANGE,
+        .data_in_num = I2S_SD,
+    };
+
+    if (i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL) != ESP_OK ||
+        i2s_set_pin(I2S_PORT, &pin_config) != ESP_OK) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "I2S init failed");
+        return ESP_FAIL;
+    }
+
+    Serial.printf("Recording %d seconds...\n", seconds);
+
+    int totalSamples = I2S_SAMPLE_RATE * seconds;
+    int dataSize = totalSamples * 2;  // 16-bit output = 2 bytes per sample
+    int wavSize = 44 + dataSize;
+
+    // WAV header
+    uint8_t wavHeader[44];
+    memcpy(wavHeader, "RIFF", 4);
+    *((uint32_t*)(wavHeader + 4)) = wavSize - 8;
+    memcpy(wavHeader + 8, "WAVE", 4);
+    memcpy(wavHeader + 12, "fmt ", 4);
+    *((uint32_t*)(wavHeader + 16)) = 16;
+    *((uint16_t*)(wavHeader + 20)) = 1;  // PCM
+    *((uint16_t*)(wavHeader + 22)) = 1;  // mono
+    *((uint32_t*)(wavHeader + 24)) = I2S_SAMPLE_RATE;
+    *((uint32_t*)(wavHeader + 28)) = I2S_SAMPLE_RATE * 2;  // byte rate
+    *((uint16_t*)(wavHeader + 32)) = 2;  // block align
+    *((uint16_t*)(wavHeader + 34)) = 16; // bits per sample
+    memcpy(wavHeader + 36, "data", 4);
+    *((uint32_t*)(wavHeader + 40)) = dataSize;
+
+    httpd_resp_set_type(req, "audio/wav");
+    httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
+
+    // Send WAV header
+    httpd_resp_send_chunk(req, (const char*)wavHeader, 44);
+
+    // Record and stream in chunks
+    int32_t i2sBuf[I2S_BUF_LEN];
+    int16_t pcmBuf[I2S_BUF_LEN];
+    size_t bytesRead;
+    int samplesLeft = totalSamples;
+
+    while (samplesLeft > 0) {
+        int toRead = min((int)I2S_BUF_LEN, samplesLeft);
+        i2s_read(I2S_PORT, i2sBuf, toRead * sizeof(int32_t), &bytesRead, portMAX_DELAY);
+        int got = bytesRead / sizeof(int32_t);
+
+        // Convert 32-bit I2S to 16-bit PCM
+        for (int i = 0; i < got; i++) {
+            pcmBuf[i] = (int16_t)(i2sBuf[i] >> 14);
+        }
+
+        httpd_resp_send_chunk(req, (const char*)pcmBuf, got * sizeof(int16_t));
+        samplesLeft -= got;
+    }
+
+    // End chunked response
+    httpd_resp_send_chunk(req, NULL, 0);
+
+    i2s_driver_uninstall(I2S_PORT);
+    Serial.println("Recording done, WAV sent");
+    return ESP_OK;
+}
+
 // ===== Web Dashboard Page =====
 static const char INDEX_HTML[] PROGMEM = R"rawliteral(
 <!DOCTYPE html>
@@ -524,6 +632,16 @@ input[type=range]::-webkit-slider-thumb{-webkit-appearance:none;width:18px;heigh
 <div class="status" id="servoStatus">Pan: 90 | Tilt: 90</div>
 </div>
 
+<div class="card" style="grid-column:1/3">
+<h3>Microphone (INMP441)</h3>
+<div class="btn-group">
+<button class="btn btn-on" id="btnRec" onclick="startRecord()">Record 3s</button>
+<button class="btn btn-center" onclick="startRecord(5)">Record 5s</button>
+</div>
+<div id="recStatus" class="status"></div>
+<audio id="audioPlayer" controls style="width:100%;margin-top:8px;display:none"></audio>
+</div>
+
 </div>
 
 <script>
@@ -585,6 +703,27 @@ function updateTrackUI(){
     btn.textContent='Tracking OFF';btn.className='btn btn-off';
     badge.textContent='MANUAL';badge.className='track-badge track-off';
   }
+}
+
+function startRecord(sec){
+  sec=sec||3;
+  var btn=document.getElementById('btnRec');
+  var status=document.getElementById('recStatus');
+  var player=document.getElementById('audioPlayer');
+  btn.disabled=true;
+  status.textContent='Recording '+sec+'s...';
+  player.style.display='none';
+  fetch('/record?seconds='+sec).then(r=>r.blob()).then(blob=>{
+    var url=URL.createObjectURL(blob);
+    player.src=url;
+    player.style.display='block';
+    player.play();
+    status.textContent='Done! Playing back...';
+    btn.disabled=false;
+  }).catch(e=>{
+    status.textContent='Error: '+e;
+    btn.disabled=false;
+  });
 }
 
 setInterval(fetchSensor, 2000);
@@ -663,11 +802,19 @@ void startCameraServer() {
         .user_ctx  = NULL
     };
 
+    httpd_uri_t record_uri = {
+        .uri       = "/record",
+        .method    = HTTP_GET,
+        .handler   = record_handler,
+        .user_ctx  = NULL
+    };
+
     if (httpd_start(&camera_httpd, &config) == ESP_OK) {
         httpd_register_uri_handler(camera_httpd, &index_uri);
         httpd_register_uri_handler(camera_httpd, &capture_uri);
         httpd_register_uri_handler(camera_httpd, &servo_uri);
         httpd_register_uri_handler(camera_httpd, &sensor_uri);
+        httpd_register_uri_handler(camera_httpd, &record_uri);
         Serial.println("Web dashboard + API started on port 80");
     }
 }
