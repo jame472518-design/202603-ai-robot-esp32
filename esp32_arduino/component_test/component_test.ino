@@ -12,7 +12,8 @@
  *   SG90 Tilt: Signal → GPIO 3,  VCC → 5V, GND → GND
  *   DHT11:     Data   → GPIO 2,  VCC → 3.3V, GND → GND
  *   OLED:      SDA → GPIO 47, SCL → GPIO 48, VCC → 3.3V, GND → GND
- *   INMP441:   SCK → GPIO 40, WS → GPIO 41, SD → GPIO 42, L/R → GND, VDD → 3.3V
+ *   INMP441:   SCK → GPIO 38, WS → GPIO 39, SD → GPIO 40, L/R → GND, VDD → 3.3V
+ *   MAX98357A: BCLK → GPIO 41, LRC → GPIO 42, DIN → GPIO 1, VIN → 5V
  *
  * Libraries:
  *   - DHT sensor library (Adafruit)
@@ -31,7 +32,9 @@
  *     8 = Test OLED
  *     9 = OLED live sensor display
  *     m = Test INMP441 microphone
- *     s = Stop sweep / live / mic
+ *     p = Test MAX98357A speaker
+ *     l = Mic loopback (mic → speaker live)
+ *     s = Stop sweep / live / mic / loopback
  */
 
 #include <WiFi.h>
@@ -63,13 +66,20 @@ float panAngle = 90.0;
 float tiltAngle = 90.0;
 
 // ===== INMP441 I2S Config =====
-#define I2S_SCK    40
-#define I2S_WS     41
-#define I2S_SD     42
+#define I2S_SCK    38
+#define I2S_WS     39
+#define I2S_SD     40
 #define I2S_PORT   I2S_NUM_0
 #define I2S_SAMPLE_RATE  16000
 #define I2S_BUF_LEN      512
 bool micReady = false;
+
+// ===== MAX98357A I2S Config =====
+#define SPK_BCLK   41
+#define SPK_LRC    42
+#define SPK_DIN     1
+#define SPK_PORT   I2S_NUM_1
+bool spkReady = false;
 
 // ===== Camera Pins (GOOUUU ESP32-S3-CAM) =====
 #define PWDN_GPIO_NUM  -1
@@ -465,24 +475,29 @@ void testMicrophone() {
     size_t bytesRead = 0;
     int count = 0;
 
+    // Debug: print raw sample values
+    i2s_read(I2S_PORT, samples, sizeof(samples), &bytesRead, 1000 / portTICK_PERIOD_MS);
+    Serial.printf("  DEBUG: %u bytes, raw[0]=%d raw[1]=%d raw[2]=%d raw[3]=%d\n",
+                  bytesRead, samples[0], samples[1], samples[2], samples[3]);
+
     while (sweeping) {
         i2s_read(I2S_PORT, samples, sizeof(samples), &bytesRead, portMAX_DELAY);
         int numSamples = bytesRead / sizeof(int32_t);
 
         if (numSamples == 0) continue;
 
-        // Calculate RMS volume
+        // Calculate RMS volume (use raw 32-bit values, scale after)
         int64_t sum = 0;
-        int32_t maxVal = 0;
-        int32_t minVal = 0;
+        int32_t maxVal = -2147483647;
+        int32_t minVal = 2147483647;
         for (int i = 0; i < numSamples; i++) {
-            int32_t s = samples[i] >> 14;  // Scale down 32-bit to useful range
+            int32_t s = samples[i] >> 8;  // Light shift only
             sum += (int64_t)s * s;
-            if (s > maxVal) maxVal = s;
-            if (s < minVal) minVal = s;
+            if (samples[i] > maxVal) maxVal = samples[i];
+            if (samples[i] < minVal) minVal = samples[i];
         }
         float rms = sqrt((float)sum / numSamples);
-        int level = map(constrain((int)rms, 0, 5000), 0, 5000, 0, 30);
+        int level = map(constrain((int)(rms / 100), 0, 3000), 0, 3000, 0, 30);
 
         // Print volume bar every 5th read
         count++;
@@ -491,7 +506,7 @@ void testMicrophone() {
             for (int i = 0; i < 30; i++) {
                 Serial.print(i < level ? '#' : ' ');
             }
-            Serial.printf("] RMS:%6.0f  Peak:%d\n", rms, maxVal - minVal);
+            Serial.printf("] RMS:%8.0f  Max:%d Min:%d\n", rms, maxVal, minVal);
         }
 
         // Check stop
@@ -504,6 +519,148 @@ void testMicrophone() {
     i2s_driver_uninstall(I2S_PORT);
     micReady = false;
     Serial.println("===== MIC TEST DONE =====\n");
+}
+
+void initSpeaker() {
+    if (spkReady) return;
+
+    i2s_config_t i2s_config = {
+        .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_TX),
+        .sample_rate = I2S_SAMPLE_RATE,
+        .bits_per_sample = I2S_BITS_PER_SAMPLE_16BIT,
+        .channel_format = I2S_CHANNEL_FMT_ONLY_LEFT,
+        .communication_format = I2S_COMM_FORMAT_STAND_I2S,
+        .intr_alloc_flags = ESP_INTR_FLAG_LEVEL1,
+        .dma_buf_count = 4,
+        .dma_buf_len = I2S_BUF_LEN,
+        .use_apll = false,
+        .tx_desc_auto_clear = true,
+        .fixed_mclk = 0,
+    };
+
+    i2s_pin_config_t pin_config = {
+        .bck_io_num = SPK_BCLK,
+        .ws_io_num = SPK_LRC,
+        .data_out_num = SPK_DIN,
+        .data_in_num = I2S_PIN_NO_CHANGE,
+    };
+
+    if (i2s_driver_install(SPK_PORT, &i2s_config, 0, NULL) == ESP_OK &&
+        i2s_set_pin(SPK_PORT, &pin_config) == ESP_OK) {
+        spkReady = true;
+        Serial.println("  I2S speaker initialized OK");
+    } else {
+        Serial.println("  FAIL - I2S speaker init failed");
+    }
+}
+
+void testSpeaker() {
+    Serial.println("\n===== TEST: MAX98357A Speaker (GPIO 41/42/1) =====");
+    Serial.println("Playing test tones...\n");
+
+    initSpeaker();
+    if (!spkReady) {
+        Serial.println("===== SPEAKER TEST DONE =====\n");
+        return;
+    }
+
+    // Generate and play sine wave tones
+    int16_t samples[I2S_BUF_LEN];
+    size_t bytesWritten;
+
+    // Play 3 different tones
+    int freqs[] = {440, 880, 1320};  // A4, A5, E6
+    const char* names[] = {"440Hz (A4)", "880Hz (A5)", "1320Hz (E6)"};
+
+    for (int f = 0; f < 3; f++) {
+        Serial.printf("  Playing %s...\n", names[f]);
+        float samplesPerCycle = (float)I2S_SAMPLE_RATE / freqs[f];
+
+        // Play for ~0.5 second
+        int totalSamples = I2S_SAMPLE_RATE / 2;
+        int sent = 0;
+
+        while (sent < totalSamples) {
+            int count = min(I2S_BUF_LEN, totalSamples - sent);
+            for (int i = 0; i < count; i++) {
+                float angle = 2.0 * PI * (sent + i) / samplesPerCycle;
+                samples[i] = (int16_t)(sin(angle) * 8000);  // Volume ~25%
+            }
+            i2s_write(SPK_PORT, samples, count * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
+            sent += count;
+        }
+        delay(200);
+    }
+
+    // Play ascending beep pattern
+    Serial.println("  Playing beep pattern...");
+    for (int freq = 200; freq <= 2000; freq += 100) {
+        float samplesPerCycle = (float)I2S_SAMPLE_RATE / freq;
+        int count = I2S_SAMPLE_RATE / 20;  // 50ms per tone
+        int sent = 0;
+        while (sent < count) {
+            int n = min(I2S_BUF_LEN, count - sent);
+            for (int i = 0; i < n; i++) {
+                float angle = 2.0 * PI * (sent + i) / samplesPerCycle;
+                samples[i] = (int16_t)(sin(angle) * 6000);
+            }
+            i2s_write(SPK_PORT, samples, n * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
+            sent += n;
+        }
+    }
+
+    // Silence
+    memset(samples, 0, sizeof(samples));
+    i2s_write(SPK_PORT, samples, sizeof(samples), &bytesWritten, portMAX_DELAY);
+
+    Serial.println("\n  Did you hear the tones?");
+    Serial.println("  If not: check speaker wires on + and - terminals");
+
+    i2s_driver_uninstall(SPK_PORT);
+    spkReady = false;
+    Serial.println("===== SPEAKER TEST DONE =====\n");
+}
+
+void micLoopback() {
+    Serial.println("\n===== Mic → Speaker Loopback (type 's' to stop) =====");
+    Serial.println("Speak into mic, hear yourself from speaker!\n");
+
+    initMic();
+    initSpeaker();
+    if (!micReady || !spkReady) {
+        Serial.println("  FAIL - mic or speaker not ready");
+        return;
+    }
+
+    sweeping = true;
+    int32_t micBuf[256];
+    int16_t spkBuf[256];
+    size_t bytesRead, bytesWritten;
+
+    while (sweeping) {
+        // Read from mic (32-bit)
+        i2s_read(I2S_PORT, micBuf, sizeof(micBuf), &bytesRead, portMAX_DELAY);
+        int numSamples = bytesRead / sizeof(int32_t);
+
+        // Convert 32-bit mic data to 16-bit speaker data
+        for (int i = 0; i < numSamples; i++) {
+            spkBuf[i] = (int16_t)(micBuf[i] >> 14);
+        }
+
+        // Write to speaker
+        i2s_write(SPK_PORT, spkBuf, numSamples * sizeof(int16_t), &bytesWritten, portMAX_DELAY);
+
+        if (Serial.available()) {
+            char c = Serial.read();
+            if (c == 's' || c == 'S') sweeping = false;
+        }
+    }
+
+    i2s_driver_uninstall(I2S_PORT);
+    i2s_driver_uninstall(SPK_PORT);
+    micReady = false;
+    spkReady = false;
+    Serial.println("===== Loopback stopped =====\n");
 }
 
 void testAll() {
@@ -538,7 +695,9 @@ void printMenu() {
     Serial.println("  8 = OLED display test");
     Serial.println("  9 = OLED live sensor");
     Serial.println("  m = INMP441 microphone");
-    Serial.println("  s = Stop sweep / live / mic");
+    Serial.println("  p = MAX98357A speaker");
+    Serial.println("  l = Mic→Speaker loopback");
+    Serial.println("  s = Stop all");
     Serial.println("================================");
     Serial.println("Type a number and press Enter:\n");
 }
@@ -583,6 +742,10 @@ void loop() {
             case '9': oledLiveSensor(); printMenu(); break;
             case 'm':
             case 'M': testMicrophone(); printMenu(); break;
+            case 'p':
+            case 'P': testSpeaker(); printMenu(); break;
+            case 'l':
+            case 'L': micLoopback(); printMenu(); break;
             case 's':
             case 'S': sweeping = false; break;
             default: break;
