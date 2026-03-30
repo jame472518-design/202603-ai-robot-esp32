@@ -27,11 +27,14 @@
  * Libraries (Arduino IDE → Manage Libraries):
  *   - PubSubClient (Nick O'Leary)
  *   - DHT sensor library (Adafruit)
+ *   - U8g2 (OLED SH1106)
  */
 
 #include <WiFi.h>
+#include <Wire.h>
 #include <PubSubClient.h>
 #include <DHT.h>
+#include <U8g2lib.h>
 #include <driver/i2s.h>
 #include "esp_camera.h"
 #include "esp_http_server.h"
@@ -40,6 +43,17 @@
 #define DHT_PIN   2
 #define DHT_TYPE  DHT11
 DHT dht(DHT_PIN, DHT_TYPE);
+
+// ===== OLED Config =====
+#define OLED_SDA  47
+#define OLED_SCL  48
+U8G2_SH1106_128X64_NONAME_F_HW_I2C u8g2(U8G2_R0, U8X8_PIN_NONE);
+
+// ===== Face display state =====
+String detectedName = "";
+float  detectedConf = 0.0;
+unsigned long lastFaceMsg = 0;
+#define FACE_DISPLAY_TIMEOUT 5000  // Clear name after 5s
 
 // ===== INMP441 I2S Config =====
 #define I2S_SCK    38
@@ -118,6 +132,7 @@ const char* DEVICE_ID   = "esp32s3_cam_001";
 String topicHeartbeat;
 String topicSensor;
 String topicCommand;
+String topicFace;
 String topicStatus;
 
 // ===== Intervals =====
@@ -869,6 +884,24 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         trackingEnabled = (msg.indexOf("true") >= 0);
         Serial.printf("Tracking %s\n", trackingEnabled ? "enabled" : "disabled");
     }
+
+    // Handle face recognition result from Jetson
+    // Example: {"name":"小明","confidence":0.82} or {"name":null}
+    if (String(topic) == topicFace) {
+        if (msg.indexOf("\"name\":null") >= 0 || msg.indexOf("\"name\":\"unknown\"") >= 0) {
+            detectedName = "Unknown";
+            detectedConf = 0;
+        } else if (msg.indexOf("\"name\":\"") >= 0) {
+            int start = msg.indexOf("\"name\":\"") + 8;
+            int end = msg.indexOf("\"", start);
+            detectedName = msg.substring(start, end);
+            // Parse confidence
+            int cIdx = msg.indexOf("\"confidence\":") + 13;
+            detectedConf = msg.substring(cIdx).toFloat();
+        }
+        lastFaceMsg = millis();
+        Serial.printf("Face: %s (%.0f%%)\n", detectedName.c_str(), detectedConf * 100);
+    }
 }
 
 // ===== MQTT Connect =====
@@ -882,6 +915,7 @@ void mqtt_connect() {
         Serial.println(" connected!");
         mqttClient.publish(topicStatus.c_str(), "{\"status\":\"online\"}", true);
         mqttClient.subscribe(topicCommand.c_str());
+        mqttClient.subscribe(topicFace.c_str());
 
         // Publish camera stream URL
         char streamUrl[128];
@@ -945,6 +979,7 @@ void setup() {
     topicHeartbeat = prefix + "/heartbeat";
     topicSensor    = prefix + "/sensor";
     topicCommand   = prefix + "/command";
+    topicFace      = prefix + "/face";
     topicStatus    = prefix + "/status";
 
     // Camera
@@ -955,6 +990,16 @@ void setup() {
     // DHT11
     dht.begin();
     Serial.println("DHT11 initialized");
+
+    // OLED
+    Wire.begin(OLED_SDA, OLED_SCL);
+    u8g2.setBusClock(400000);
+    u8g2.begin();
+    u8g2.clearBuffer();
+    u8g2.setFont(u8g2_font_6x10_tr);
+    u8g2.drawStr(10, 30, "AI Robot Starting...");
+    u8g2.sendBuffer();
+    Serial.println("OLED initialized");
 
     // Servos
     servoSetup();
@@ -1006,4 +1051,62 @@ void loop() {
 
     // Face tracking (runs every TRACK_INTERVAL_MS)
     updateTracking();
+
+    // OLED display update (every 500ms)
+    static unsigned long lastOLED = 0;
+    if (now - lastOLED > 500) {
+        lastOLED = now;
+        updateOLED();
+    }
+}
+
+// ===== OLED Display =====
+void updateOLED() {
+    float h = dht.readHumidity();
+    float t = dht.readTemperature();
+    char buf[32];
+
+    u8g2.clearBuffer();
+
+    // Title bar
+    u8g2.setFont(u8g2_font_6x10_tr);
+    u8g2.drawStr(0, 10, "AI Companion Robot");
+    u8g2.drawLine(0, 12, 128, 12);
+
+    // Face recognition result
+    if (detectedName.length() > 0 && (millis() - lastFaceMsg < FACE_DISPLAY_TIMEOUT)) {
+        if (detectedName == "Unknown") {
+            u8g2.setFont(u8g2_font_7x14_tr);
+            u8g2.drawStr(0, 28, "? Unknown Face");
+        } else {
+            // Show name big
+            u8g2.setFont(u8g2_font_10x20_tr);
+            snprintf(buf, sizeof(buf), "%s", detectedName.c_str());
+            // Center the name
+            int w = u8g2.getStrWidth(buf);
+            u8g2.drawStr((128 - w) / 2, 30, buf);
+            // Confidence
+            u8g2.setFont(u8g2_font_6x10_tr);
+            snprintf(buf, sizeof(buf), "%.0f%% match", detectedConf * 100);
+            int cw = u8g2.getStrWidth(buf);
+            u8g2.drawStr((128 - cw) / 2, 42, buf);
+        }
+    } else {
+        u8g2.setFont(u8g2_font_6x10_tr);
+        u8g2.drawStr(20, 28, "Scanning...");
+    }
+
+    // Bottom: sensor data
+    u8g2.setFont(u8g2_font_6x10_tr);
+    if (!isnan(t) && !isnan(h)) {
+        snprintf(buf, sizeof(buf), "%.1fC  %.0f%%", t, h);
+    } else {
+        snprintf(buf, sizeof(buf), "DHT11: --");
+    }
+    u8g2.drawStr(0, 62, buf);
+
+    // WiFi + MQTT status
+    u8g2.drawStr(80, 62, mqttClient.connected() ? "MQTT:OK" : "MQTT:--");
+
+    u8g2.sendBuffer();
 }

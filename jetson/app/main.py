@@ -183,6 +183,19 @@ async def face_recognition_loop():
             })
             await _ws_broadcast(face_event)
 
+            # Send face result to ESP32 via MQTT for OLED display
+            if faces_data:
+                best = max(faces_data, key=lambda f: f["confidence"])
+                face_mqtt = {
+                    "name": best["name"],
+                    "confidence": best["confidence"],
+                }
+            else:
+                face_mqtt = {"name": None, "confidence": 0}
+            mqtt_manager.publish(
+                "robot/esp32/esp32s3_cam_001/face", face_mqtt
+            )
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
