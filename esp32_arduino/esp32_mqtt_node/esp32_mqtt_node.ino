@@ -886,18 +886,35 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
     }
 
     // Handle face recognition result from Jetson
-    // Example: {"name":"小明","confidence":0.82} or {"name":null}
+    // Example: {"name": "james", "confidence": 0.42} or {"name": null}
     if (String(topic) == topicFace) {
-        if (msg.indexOf("\"name\":null") >= 0 || msg.indexOf("\"name\":\"unknown\"") >= 0) {
+        // Parse confidence first (always present)
+        int cIdx = msg.indexOf("\"confidence\":");
+        if (cIdx >= 0) {
+            detectedConf = msg.substring(cIdx + 13).toFloat();
+        }
+
+        // Parse name
+        if (msg.indexOf("null") >= 0 && msg.indexOf("\"name\"") >= 0) {
+            // name is null
             detectedName = "Unknown";
             detectedConf = 0;
-        } else if (msg.indexOf("\"name\":\"") >= 0) {
-            int start = msg.indexOf("\"name\":\"") + 8;
-            int end = msg.indexOf("\"", start);
-            detectedName = msg.substring(start, end);
-            // Parse confidence
-            int cIdx = msg.indexOf("\"confidence\":") + 13;
-            detectedConf = msg.substring(cIdx).toFloat();
+        } else {
+            // Find the name value between quotes after "name"
+            int nameIdx = msg.indexOf("\"name\"");
+            if (nameIdx >= 0) {
+                // Find the opening quote of the value
+                int firstQuote = msg.indexOf("\"", nameIdx + 6);  // skip "name"
+                if (firstQuote >= 0) {
+                    firstQuote = msg.indexOf("\"", firstQuote + 1); // skip : and space
+                    if (firstQuote >= 0) {
+                        int endQuote = msg.indexOf("\"", firstQuote + 1);
+                        if (endQuote > firstQuote) {
+                            detectedName = msg.substring(firstQuote + 1, endQuote);
+                        }
+                    }
+                }
+            }
         }
         lastFaceMsg = millis();
         Serial.printf("Face: %s (%.0f%%)\n", detectedName.c_str(), detectedConf * 100);
