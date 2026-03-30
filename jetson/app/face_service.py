@@ -64,7 +64,7 @@ class FaceService:
             from insightface.app import FaceAnalysis
             providers = ['CUDAExecutionProvider', 'CPUExecutionProvider']
             self._face_app = FaceAnalysis(name=self.model_name, providers=providers)
-            self._face_app.prepare(ctx_id=0, det_size=(640, 480))
+            self._face_app.prepare(ctx_id=0, det_size=(320, 240))
             logger.info(f"InsightFace model '{self.model_name}' loaded")
         except Exception as e:
             logger.error(f"Failed to load InsightFace: {e}")
@@ -105,6 +105,11 @@ class FaceService:
                 return []
 
             img = self._decode_jpeg(jpeg_bytes)
+            # Resize to 320x240 for faster detection
+            h, w = img.shape[:2]
+            if w > 320:
+                scale = 320 / w
+                img = cv2.resize(img, (320, int(h * scale)))
             faces = self._face_app.get(img)
             if not faces:
                 return []

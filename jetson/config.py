@@ -14,5 +14,5 @@ PIPER_VOICE = "zh_CN-huayan-medium"
 # Face Recognition
 ESP32_CAM_URL = "http://172.26.221.84"  # Update after ESP32 connects
 FACE_SIMILARITY_THRESHOLD = 0.5
-FACE_LOOP_INTERVAL = 1.5
+FACE_LOOP_INTERVAL = 2.0
 FACE_GREET_COOLDOWN = 30
