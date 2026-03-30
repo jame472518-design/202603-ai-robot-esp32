@@ -11,8 +11,8 @@
       <input v-model="input" @keyup.enter="sendMessage"
              placeholder="Type a message..." />
       <button @click="sendMessage">Send</button>
-      <button @click="toggleRecording" :class="{ recording: isRecording }">
-        {{ isRecording ? 'Stop' : 'Mic' }}
+      <button @click="voiceChat" :disabled="recording" :class="{ recording: recording }">
+        {{ recording ? 'Recording...' : 'ESP32 Mic' }}
       </button>
     </div>
   </div>
@@ -25,9 +25,8 @@ const props = defineProps({ messages: Array, send: Function })
 const input = ref('')
 const chatMessages = ref([])
 const messagesEl = ref(null)
-const isRecording = ref(false)
-let mediaRecorder = null
-let audioChunks = []
+const recording = ref(false)
+const apiBase = `http://${window.location.hostname}:8000`
 
 function sendMessage() {
   if (!input.value.trim()) return
@@ -37,59 +36,32 @@ function sendMessage() {
   scrollToBottom()
 }
 
-async function toggleRecording() {
-  if (isRecording.value) {
-    mediaRecorder.stop()
-    isRecording.value = false
-  } else {
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true })
-      mediaRecorder = new MediaRecorder(stream)
-      audioChunks = []
-      mediaRecorder.ondataavailable = (e) => audioChunks.push(e.data)
-      mediaRecorder.onstop = async () => {
-        const blob = new Blob(audioChunks, { type: 'audio/webm' })
-        const formData = new FormData()
-        formData.append('file', blob, 'recording.webm')
+async function voiceChat() {
+  recording.value = true
+  chatMessages.value.push({ role: 'user', text: '(Recording from ESP32 mic...)' })
+  scrollToBottom()
 
-        chatMessages.value.push({ role: 'user', text: '(speaking...)' })
-        scrollToBottom()
+  try {
+    const res = await fetch(`${apiBase}/api/voice-chat?seconds=3`, { method: 'POST' })
+    const data = await res.json()
 
-        try {
-          const apiBase = `http://${window.location.hostname}:8000`
-          const res = await fetch(`${apiBase}/api/voice`, {
-            method: 'POST',
-            body: formData,
-          })
-          const inputText = res.headers.get('X-Input-Text')
-          const replyText = res.headers.get('X-Reply-Text')
-
-          // Update user message with transcription
-          const lastUserMsg = chatMessages.value[chatMessages.value.length - 1]
-          if (lastUserMsg && lastUserMsg.role === 'user') {
-            lastUserMsg.text = inputText || '(no speech detected)'
-          }
-          chatMessages.value.push({ role: 'assistant', text: replyText || '(no response)' })
-          scrollToBottom()
-
-          // Play audio response
-          const audioBlob = await res.blob()
-          const audioUrl = URL.createObjectURL(audioBlob)
-          const audio = new Audio(audioUrl)
-          audio.play()
-        } catch (err) {
-          console.error('Voice pipeline error:', err)
-          chatMessages.value.push({ role: 'assistant', text: 'Voice pipeline error' })
-        }
-
-        stream.getTracks().forEach(t => t.stop())
-      }
-      mediaRecorder.start()
-      isRecording.value = true
-    } catch (err) {
-      console.error('Mic access error:', err)
+    // Update the recording message with actual text
+    const lastUserMsg = [...chatMessages.value].reverse().find(m => m.role === 'user')
+    if (lastUserMsg) {
+      lastUserMsg.text = data.input ? `🎤 ${data.input}` : '(no speech detected)'
     }
+
+    if (data.reply) {
+      chatMessages.value.push({ role: 'assistant', text: data.reply })
+    } else if (data.error) {
+      chatMessages.value.push({ role: 'assistant', text: `Error: ${data.error}` })
+    }
+  } catch (err) {
+    chatMessages.value.push({ role: 'assistant', text: 'Voice chat error: ' + err })
   }
+
+  recording.value = false
+  scrollToBottom()
 }
 
 watch(() => props.messages, (msgs) => {
@@ -137,6 +109,9 @@ function scrollToBottom() {
   padding: 8px 16px; background: #89b4fa;
   color: #1e1e2e; border: none; border-radius: 8px;
   cursor: pointer; font-weight: bold;
+}
+.chat-input button:disabled {
+  opacity: 0.5; cursor: not-allowed;
 }
 .chat-input button.recording {
   background: #f38ba8;

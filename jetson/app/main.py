@@ -325,6 +325,59 @@ async def voice_pipeline(file: UploadFile = File(...)):
     )
 
 
+# ===== Voice Chat: ESP32 Mic → STT → LLM → Chat =====
+
+@app.post("/api/voice-chat")
+async def voice_chat(seconds: int = 3):
+    """Record from ESP32 mic → STT → LLM → broadcast to chat"""
+    if not stt_available:
+        return JSONResponse({"error": "STT not available"}, 503)
+
+    # 1. Record from ESP32
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{ESP32_CAM_URL}/record?seconds={seconds}",
+                timeout=aiohttp.ClientTimeout(total=seconds + 5),
+            ) as resp:
+                if resp.status != 200:
+                    return JSONResponse({"error": "Cannot reach ESP32 mic"}, 502)
+                wav_bytes = await resp.read()
+    except Exception as e:
+        return JSONResponse({"error": f"Recording failed: {e}"}, 502)
+
+    # 2. STT - skip WAV header (44 bytes)
+    try:
+        audio_data = wav_bytes[44:] if len(wav_bytes) > 44 else wav_bytes
+        loop = asyncio.get_running_loop()
+        text = await loop.run_in_executor(None, stt_service.transcribe, audio_data)
+    except Exception as e:
+        return JSONResponse({"error": f"STT failed: {e}"}, 500)
+
+    if not text:
+        return {"input": "", "reply": "", "error": "No speech detected"}
+
+    # 3. Broadcast user input to chat
+    user_msg = json.dumps({
+        "type": "chat_response",
+        "data": {"text": f"🎤 {text}"},
+    })
+    await _ws_broadcast(user_msg)
+
+    # 4. LLM reply
+    sensor_ctx = _get_sensor_context()
+    reply = await loop.run_in_executor(None, llm_service.chat, text, sensor_ctx)
+
+    # 5. Broadcast LLM reply to chat
+    reply_msg = json.dumps({
+        "type": "chat_response",
+        "data": {"text": reply},
+    })
+    await _ws_broadcast(reply_msg)
+
+    return {"input": text, "reply": reply}
+
+
 # ===== Face Recognition Endpoints =====
 
 @app.post("/api/face/register")

@@ -8,7 +8,7 @@ FASTAPI_PORT = 8000
 OLLAMA_MODEL = "qwen2.5:3b"
 OLLAMA_HOST = "http://localhost:11434"
 
-WHISPER_MODEL = "small"
+WHISPER_MODEL = "tiny"
 PIPER_VOICE = "zh_CN-huayan-medium"
 
 # Face Recognition

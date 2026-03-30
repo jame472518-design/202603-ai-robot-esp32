@@ -15,8 +15,8 @@ class STTService:
             logger.info(f"Loading Whisper {self.model_size}...")
             self.model = WhisperModel(
                 self.model_size,
-                device="cuda",
-                compute_type="float16",
+                device="cpu",
+                compute_type="int8",
             )
             logger.info("Whisper loaded")
 
