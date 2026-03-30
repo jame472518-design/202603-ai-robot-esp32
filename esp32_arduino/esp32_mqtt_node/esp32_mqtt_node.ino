@@ -894,24 +894,21 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
             detectedConf = msg.substring(cIdx + 13).toFloat();
         }
 
-        // Parse name
-        if (msg.indexOf("null") >= 0 && msg.indexOf("\"name\"") >= 0) {
-            // name is null
+        // Parse name - find value after "name":
+        // Format: {"name": "james-1", ...} or {"name": null, ...}
+        if (msg.indexOf(": null") >= 0 && msg.indexOf("\"name\"") >= 0) {
             detectedName = "Unknown";
             detectedConf = 0;
         } else {
-            // Find the name value between quotes after "name"
+            // Find ": " after "name", then the quoted string
             int nameIdx = msg.indexOf("\"name\"");
             if (nameIdx >= 0) {
-                // Find the opening quote of the value
-                int firstQuote = msg.indexOf("\"", nameIdx + 6);  // skip "name"
-                if (firstQuote >= 0) {
-                    firstQuote = msg.indexOf("\"", firstQuote + 1); // skip : and space
-                    if (firstQuote >= 0) {
-                        int endQuote = msg.indexOf("\"", firstQuote + 1);
-                        if (endQuote > firstQuote) {
-                            detectedName = msg.substring(firstQuote + 1, endQuote);
-                        }
+                int colon = msg.indexOf(":", nameIdx);
+                if (colon >= 0) {
+                    int openQuote = msg.indexOf("\"", colon);
+                    int closeQuote = msg.indexOf("\"", openQuote + 1);
+                    if (openQuote >= 0 && closeQuote > openQuote) {
+                        detectedName = msg.substring(openQuote + 1, closeQuote);
                     }
                 }
             }
