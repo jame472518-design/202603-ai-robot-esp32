@@ -475,19 +475,10 @@ static esp_err_t sensor_handler(httpd_req_t *req) {
     return ESP_OK;
 }
 
-// ===== Record Audio Handler =====
-static esp_err_t record_handler(httpd_req_t *req) {
-    // Parse duration from query: /record?seconds=3
-    int seconds = RECORD_SECONDS;
-    char query[32] = {0};
-    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
-        char val[8];
-        if (httpd_query_key_value(query, "seconds", val, sizeof(val)) == ESP_OK) {
-            seconds = constrain(atoi(val), 1, 10);
-        }
-    }
+// ===== I2S Microphone Init (called once in setup) =====
+bool i2sReady = false;
 
-    // Init I2S for recording
+void i2s_mic_init() {
     i2s_config_t i2s_config = {
         .mode = (i2s_mode_t)(I2S_MODE_MASTER | I2S_MODE_RX),
         .sample_rate = I2S_SAMPLE_RATE,
@@ -508,16 +499,41 @@ static esp_err_t record_handler(httpd_req_t *req) {
         .data_in_num = I2S_SD,
     };
 
-    if (i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL) != ESP_OK ||
-        i2s_set_pin(I2S_PORT, &pin_config) != ESP_OK) {
-        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "I2S init failed");
+    if (i2s_driver_install(I2S_PORT, &i2s_config, 0, NULL) == ESP_OK &&
+        i2s_set_pin(I2S_PORT, &pin_config) == ESP_OK) {
+        i2sReady = true;
+        Serial.println("I2S microphone initialized");
+    } else {
+        Serial.println("I2S microphone init FAILED");
+    }
+}
+
+// ===== Record Audio Handler =====
+static esp_err_t record_handler(httpd_req_t *req) {
+    if (!i2sReady) {
+        httpd_resp_send_err(req, HTTPD_500_INTERNAL_SERVER_ERROR, "I2S not ready");
         return ESP_FAIL;
+    }
+
+    // Parse duration from query: /record?seconds=3
+    int seconds = RECORD_SECONDS;
+    char query[32] = {0};
+    if (httpd_req_get_url_query_str(req, query, sizeof(query)) == ESP_OK) {
+        char val[8];
+        if (httpd_query_key_value(query, "seconds", val, sizeof(val)) == ESP_OK) {
+            seconds = constrain(atoi(val), 1, 10);
+        }
     }
 
     Serial.printf("Recording %d seconds...\n", seconds);
 
+    // Flush old data from I2S buffer
+    int32_t flushBuf[256];
+    size_t flushRead;
+    i2s_read(I2S_PORT, flushBuf, sizeof(flushBuf), &flushRead, 100 / portTICK_PERIOD_MS);
+
     int totalSamples = I2S_SAMPLE_RATE * seconds;
-    int dataSize = totalSamples * 2;  // 16-bit output = 2 bytes per sample
+    int dataSize = totalSamples * 2;
     int wavSize = 44 + dataSize;
 
     // WAV header
@@ -527,33 +543,30 @@ static esp_err_t record_handler(httpd_req_t *req) {
     memcpy(wavHeader + 8, "WAVE", 4);
     memcpy(wavHeader + 12, "fmt ", 4);
     *((uint32_t*)(wavHeader + 16)) = 16;
-    *((uint16_t*)(wavHeader + 20)) = 1;  // PCM
-    *((uint16_t*)(wavHeader + 22)) = 1;  // mono
+    *((uint16_t*)(wavHeader + 20)) = 1;
+    *((uint16_t*)(wavHeader + 22)) = 1;
     *((uint32_t*)(wavHeader + 24)) = I2S_SAMPLE_RATE;
-    *((uint32_t*)(wavHeader + 28)) = I2S_SAMPLE_RATE * 2;  // byte rate
-    *((uint16_t*)(wavHeader + 32)) = 2;  // block align
-    *((uint16_t*)(wavHeader + 34)) = 16; // bits per sample
+    *((uint32_t*)(wavHeader + 28)) = I2S_SAMPLE_RATE * 2;
+    *((uint16_t*)(wavHeader + 32)) = 2;
+    *((uint16_t*)(wavHeader + 34)) = 16;
     memcpy(wavHeader + 36, "data", 4);
     *((uint32_t*)(wavHeader + 40)) = dataSize;
 
     httpd_resp_set_type(req, "audio/wav");
     httpd_resp_set_hdr(req, "Access-Control-Allow-Origin", "*");
-
-    // Send WAV header
     httpd_resp_send_chunk(req, (const char*)wavHeader, 44);
 
-    // Record and stream in chunks
-    int32_t i2sBuf[I2S_BUF_LEN];
-    int16_t pcmBuf[I2S_BUF_LEN];
+    // Record and stream
+    int32_t i2sBuf[256];
+    int16_t pcmBuf[256];
     size_t bytesRead;
     int samplesLeft = totalSamples;
 
     while (samplesLeft > 0) {
-        int toRead = min((int)I2S_BUF_LEN, samplesLeft);
+        int toRead = min(256, samplesLeft);
         i2s_read(I2S_PORT, i2sBuf, toRead * sizeof(int32_t), &bytesRead, portMAX_DELAY);
         int got = bytesRead / sizeof(int32_t);
 
-        // Convert 32-bit I2S to 16-bit PCM
         for (int i = 0; i < got; i++) {
             pcmBuf[i] = (int16_t)(i2sBuf[i] >> 14);
         }
@@ -562,10 +575,7 @@ static esp_err_t record_handler(httpd_req_t *req) {
         samplesLeft -= got;
     }
 
-    // End chunked response
     httpd_resp_send_chunk(req, NULL, 0);
-
-    i2s_driver_uninstall(I2S_PORT);
     Serial.println("Recording done, WAV sent");
     return ESP_OK;
 }
@@ -1014,6 +1024,9 @@ void setup() {
     u8g2.drawStr(10, 30, "AI Robot Starting...");
     u8g2.sendBuffer();
     Serial.println("OLED initialized");
+
+    // I2S Microphone
+    i2s_mic_init();
 
     // Servos
     servoSetup();
