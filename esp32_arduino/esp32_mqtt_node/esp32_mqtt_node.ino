@@ -157,7 +157,7 @@ float tiltAngle = 90.0;  // Current tilt angle
 float targetPan  = 90.0;
 float targetTilt = 90.0;
 bool  tracking   = false;
-bool  trackingEnabled = true;  // Can be toggled via MQTT
+bool  trackingEnabled = false;  // Disabled by default, Jetson does face detection
 
 // ===== Servo Functions =====
 void servoSetup() {
