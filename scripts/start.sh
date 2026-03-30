@@ -7,6 +7,10 @@
 PROJECT_DIR="$(cd "$(dirname "$0")/.." && pwd)"
 IP=$(hostname -I | awk '{print $1}')
 
+# Load nvm if available (needed for Node.js 20)
+export NVM_DIR="$HOME/.nvm"
+[ -s "$NVM_DIR/nvm.sh" ] && . "$NVM_DIR/nvm.sh"
+
 echo "=== AI Companion Robot - Starting Services ==="
 echo ""
 
