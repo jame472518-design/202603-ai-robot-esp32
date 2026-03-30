@@ -108,8 +108,7 @@ class FaceService:
             # Resize to 320x240 for faster detection
             h, w = img.shape[:2]
             if w > 320:
-                scale = 320 / w
-                img = cv2.resize(img, (320, int(h * scale)))
+                img = cv2.resize(img, (320, 240))
             faces = self._face_app.get(img)
             if not faces:
                 return []
