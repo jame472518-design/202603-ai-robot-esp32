@@ -95,6 +95,8 @@ async def _ws_broadcast(message: str):
             ws_connections.remove(ws)
 
 
+face_loop_paused = False  # Pause face loop during recording
+
 async def face_recognition_loop():
     """Background loop: fetch ESP32 snapshot, detect faces, broadcast results."""
     if not face_available:
@@ -107,6 +109,8 @@ async def face_recognition_loop():
     async with aiohttp.ClientSession() as session:
         while True:
             await asyncio.sleep(FACE_LOOP_INTERVAL)
+            if face_loop_paused:
+                continue
             try:
                 async with session.get(
                     f"{ESP32_CAM_URL}/capture",
@@ -330,10 +334,13 @@ async def voice_pipeline(file: UploadFile = File(...)):
 @app.post("/api/voice-chat")
 async def voice_chat(seconds: int = 3):
     """Record from ESP32 mic → STT → LLM → broadcast to chat"""
+    global face_loop_paused
     if not stt_available:
         return JSONResponse({"error": "STT not available"}, 503)
 
-    # 1. Record from ESP32
+    # 1. Pause face loop and record from ESP32
+    face_loop_paused = True
+    await asyncio.sleep(1)  # Wait for current face loop cycle to finish
     try:
         async with aiohttp.ClientSession() as session:
             async with session.get(
@@ -344,6 +351,7 @@ async def voice_chat(seconds: int = 3):
                     return JSONResponse({"error": "Cannot reach ESP32 mic"}, 502)
                 wav_bytes = await resp.read()
     except Exception as e:
+        face_loop_paused = False
         return JSONResponse({"error": f"Recording failed: {e}"}, 502)
 
     # 2. STT - skip WAV header (44 bytes)
@@ -382,6 +390,9 @@ async def voice_chat(seconds: int = 3):
             audio_bytes = await loop.run_in_executor(None, tts_service.synthesize, reply)
         except Exception as e:
             logger.error(f"TTS error: {e}")
+
+    # 7. Resume face loop
+    face_loop_paused = False
 
     if audio_bytes:
         return Response(
