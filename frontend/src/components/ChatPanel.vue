@@ -43,18 +43,35 @@ async function voiceChat() {
 
   try {
     const res = await fetch(`${apiBase}/api/voice-chat?seconds=3`, { method: 'POST' })
-    const data = await res.json()
 
-    // Update the recording message with actual text
-    const lastUserMsg = [...chatMessages.value].reverse().find(m => m.role === 'user')
-    if (lastUserMsg) {
-      lastUserMsg.text = data.input ? `🎤 ${data.input}` : '(no speech detected)'
-    }
+    const inputText = res.headers.get('X-Input-Text')
+    const replyText = res.headers.get('X-Reply-Text')
 
-    if (data.reply) {
-      chatMessages.value.push({ role: 'assistant', text: data.reply })
-    } else if (data.error) {
-      chatMessages.value.push({ role: 'assistant', text: `Error: ${data.error}` })
+    if (inputText) {
+      // TTS audio response
+      const lastUserMsg = [...chatMessages.value].reverse().find(m => m.role === 'user')
+      if (lastUserMsg) lastUserMsg.text = `🎤 ${inputText}`
+      chatMessages.value.push({ role: 'assistant', text: replyText || '...' })
+
+      // Play TTS audio through browser speaker
+      const blob = await res.blob()
+      if (blob.size > 0) {
+        const url = URL.createObjectURL(blob)
+        const audio = new Audio(url)
+        audio.play()
+      }
+    } else {
+      // JSON response (no TTS)
+      const data = await res.json()
+      const lastUserMsg = [...chatMessages.value].reverse().find(m => m.role === 'user')
+      if (lastUserMsg) {
+        lastUserMsg.text = data.input ? `🎤 ${data.input}` : '(no speech detected)'
+      }
+      if (data.reply) {
+        chatMessages.value.push({ role: 'assistant', text: data.reply })
+      } else if (data.error) {
+        chatMessages.value.push({ role: 'assistant', text: `Error: ${data.error}` })
+      }
     }
   } catch (err) {
     chatMessages.value.push({ role: 'assistant', text: 'Voice chat error: ' + err })

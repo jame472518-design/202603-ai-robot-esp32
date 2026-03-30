@@ -375,6 +375,24 @@ async def voice_chat(seconds: int = 3):
     })
     await _ws_broadcast(reply_msg)
 
+    # 6. TTS - generate audio reply
+    audio_bytes = b""
+    if tts_available and tts_service:
+        try:
+            audio_bytes = await loop.run_in_executor(None, tts_service.synthesize, reply)
+        except Exception as e:
+            logger.error(f"TTS error: {e}")
+
+    if audio_bytes:
+        return Response(
+            content=audio_bytes,
+            media_type="audio/wav",
+            headers={
+                "X-Input-Text": text,
+                "X-Reply-Text": reply,
+                "Access-Control-Expose-Headers": "X-Input-Text, X-Reply-Text",
+            },
+        )
     return {"input": text, "reply": reply}
 
 
