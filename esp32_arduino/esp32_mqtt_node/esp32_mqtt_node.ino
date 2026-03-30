@@ -897,7 +897,7 @@ void mqttCallback(char* topic, byte* payload, unsigned int length) {
         // Parse name - find value after "name":
         // Format: {"name": "james-1", ...} or {"name": null, ...}
         if (msg.indexOf(": null") >= 0 && msg.indexOf("\"name\"") >= 0) {
-            detectedName = "Unknown";
+            detectedName = "";
             detectedConf = 0;
         } else {
             // Find ": " after "name", then the quoted string
@@ -1089,10 +1089,7 @@ void updateOLED() {
 
     // Face recognition result
     if (detectedName.length() > 0 && (millis() - lastFaceMsg < FACE_DISPLAY_TIMEOUT)) {
-        if (detectedName == "Unknown") {
-            u8g2.setFont(u8g2_font_7x14_tr);
-            u8g2.drawStr(0, 28, "? Unknown Face");
-        } else {
+        {
             // Show name big
             u8g2.setFont(u8g2_font_10x20_tr);
             snprintf(buf, sizeof(buf), "%s", detectedName.c_str());
